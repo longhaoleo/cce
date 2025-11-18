@@ -1,3 +1,4 @@
+from collections import defaultdict
 import torch
 torch.set_grad_enabled(False)
 import argparse
@@ -13,9 +14,7 @@ def UCE(pipe, edit_concepts, guide_concepts, preserve_concepts, erase_scale, pre
     start_time = time.time()
     
     # Prepare the cross attention weights required to do UCE
-    uce_modules = []
-    uce_module_names = []
-    caption_projection_modules = []
+    uce_modules = dict()
     all_modules = dict(pipe.unet.named_modules())
     
     print(list(filter(lambda x: 'attn2' in x, all_modules.keys())))   
@@ -24,49 +23,11 @@ def UCE(pipe, edit_concepts, guide_concepts, preserve_concepts, erase_scale, pre
         # Exclude temporal models (transformer_in, temp_attentions) - only process spatial Transformer2DModel modules
         if 'attn2' in name and 'temp_attentions' not in name and 'transformer_in' not in name and (name.endswith('to_v') or name.endswith('to_k')):
             print(f"Selecting module for UCE: {name}")
-            uce_modules.append(module)
-            uce_module_names.append(name)
-            
-            # Extract the corresponding caption_projection module
-            # The structure could be:
-            # - "down_blocks.0.attentions.0.transformer_blocks.0.attn2.to_k" -> "down_blocks.0.attentions.0.caption_projection"
-            attention = '.'.join(name.split('.')[:-4])  # Remove the last part
-            
-            attn_mod = all_modules[attention]
-            print(f"  -> Attention module: {attn_mod}")
-            print(f"  -> is_input_continuous: {attn_mod.is_input_continuous}")
-            print(f"  -> is_input_vectorized: {attn_mod.is_input_vectorized}")
-            print(f"  -> is_input_patches: {attn_mod.is_input_patches}")
-            
-            caption_proj_path = attention + '.caption_projection'
-            
-            print(f"Module: {name}")
-            print(f"  -> Caption projection path: {caption_proj_path}")
-            
-            # Get the caption_projection module
-            try:
-                caption_proj_module = all_modules.get(caption_proj_path, None)
-                
-                # Check if caption_projection actually exists and is not None
-                if caption_proj_module is None:
-                    print(f"  -> WARNING: caption_projection is None for {caption_proj_path}")
-                    caption_projection_modules.append(None)
-                else:
-                    caption_projection_modules.append(caption_proj_module)
-            except AttributeError as e:
-                print(f"  -> WARNING: No caption_projection found at {caption_proj_path}: {e}")
-                print(f"  -> This Transformer2DModel likely uses continuous inputs, not patched inputs")
-                caption_projection_modules.append(None)
+            uce_modules[name] = module
+
             
     original_modules = copy.deepcopy(uce_modules)
     uce_modules = copy.deepcopy(uce_modules)
-    original_caption_projections = copy.deepcopy(caption_projection_modules)
-    
-    # print selected modules
-    for name, mod, cap_proj in zip(uce_module_names, uce_modules, caption_projection_modules):
-        print(f'Selected module for UCE: {name}: {mod}')
-        print(f'  -> with caption_projection: {cap_proj}')
-
 
     # collect text embeddings for erase concept and retain concepts
     uce_erase_embeds = {}
@@ -88,34 +49,23 @@ def UCE(pipe, edit_concepts, guide_concepts, preserve_concepts, erase_scale, pre
         # Extract the last token embedding
         base_emb = t_emb[0][:,last_token_idx,:]
         
-        # Apply caption_projection for each attention module (if it exists)
-        # Store a list of projected embeddings, one per module
-        projected_embeds = []
-        for caption_proj in original_caption_projections:
-            if caption_proj is not None:
-                # Use caption projection if available (patched inputs)
-                projected_embeds.append(caption_proj(base_emb))
-            else:
-                # Use raw embedding if no caption projection (continuous inputs)
-                projected_embeds.append(base_emb)
-        
-        uce_erase_embeds[e] = projected_embeds
+        print('Base embedding shape:', base_emb.shape)
+    
+        uce_erase_embeds[e] = base_emb
     
     # collect cross attention outputs for guide concepts and retain concepts (this is for original model weights)
-    uce_guide_outputs = {}
+    uce_guide_outputs = defaultdict(dict)
     for g in guide_concepts + preserve_concepts:
         if g in uce_guide_outputs:
             continue
             
-        projected_embeds = uce_erase_embeds[g]
+        t_emb = uce_erase_embeds[g]
         
-        for module_idx, module in enumerate(original_modules):
-            # Use the caption-projected embedding for this specific module
-            t_emb = projected_embeds[module_idx]
-            uce_guide_outputs[g] = uce_guide_outputs.get(g, []) + [module(t_emb)]
+        for name, module in original_modules.items():
+            uce_guide_outputs[g][name] = module(t_emb)
 
     ###### UCE Algorithm (variables are named according to the paper: https://arxiv.org/abs/2308.14761)
-    for module_idx, module in enumerate(original_modules):
+    for name, module in original_modules.items():
         # get original weight of the model
         w_old = module.weight
 
@@ -127,8 +77,8 @@ def UCE(pipe, edit_concepts, guide_concepts, preserve_concepts, erase_scale, pre
         # Erase Concepts
         for erase_concept, guide_concept in zip(edit_concepts, guide_concepts):
             # Use the caption-projected embedding for this specific module
-            c_i = uce_erase_embeds[erase_concept][module_idx].T
-            v_i_star = uce_guide_outputs[guide_concept][module_idx].T
+            c_i = uce_erase_embeds[erase_concept].T
+            v_i_star = uce_guide_outputs[guide_concept][name].T
     
             mat1 += erase_scale * (v_i_star @ c_i.T)
             mat2 += erase_scale * (c_i @ c_i.T)
@@ -136,18 +86,18 @@ def UCE(pipe, edit_concepts, guide_concepts, preserve_concepts, erase_scale, pre
         # Retain Concepts
         for preserve_concept in preserve_concepts:
             # Use the caption-projected embedding for this specific module
-            c_i = uce_erase_embeds[preserve_concept][module_idx].T
-            v_i_star = uce_guide_outputs[preserve_concept][module_idx].T
+            c_i = uce_erase_embeds[preserve_concept].T
+            v_i_star = uce_guide_outputs[preserve_concept][name].T
     
             mat1 += preserve_scale * (v_i_star @ c_i.T)
             mat2 += preserve_scale * (c_i @ c_i.T)
     
     
-        uce_modules[module_idx].weight = torch.nn.Parameter(mat1 @ torch.inverse(mat2.float()).to(torch_dtype))
+        uce_modules[name].weight = torch.nn.Parameter(mat1 @ torch.inverse(mat2.float()).to(torch_dtype))
     
     # save the weights
     uce_state_dict = {}
-    for name, parameter in zip(uce_module_names, uce_modules):
+    for name, parameter in uce_modules.items():
         uce_state_dict[name+'.weight'] = parameter.weight
     save_file(uce_state_dict, os.path.join(save_dir, exp_name+'.safetensors'))
     
