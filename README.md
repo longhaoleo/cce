@@ -48,10 +48,10 @@ To edit concepts with HiDream-I1 (e.g. to enhance "mustache")
 python trainscripts/uce_hidream_erase.py --edit_concepts 'person;man;woman' --preserve_concepts 'person with mustache;man with mustache;woman with mustache'--expand_prompts 'true' --device 'cuda:0' --concept_type 'object' --exp_name 'person_mustache_hidream'
 ```
 
-### ZeroScopeT2V
-To erase concepts (e.g. "Van Gogh" and "Picasso" simultaneously) for ZeroscopeT2V
+### Video Model: ZeroScopeT2V 
+To erase concepts (e.g. "Lab") from ZeroscopeT2V
 ```python
-python trainscripts/uce_t2v_erase.py --model_id 'cerspense/zeroscope_v2_576w'  --edit_concepts 'Van Gogh; Picasso' --guided_concept 'art' --preserve_concepts 'Monet; Rembrandt; Warhol' --device 'cuda:0' --concept_type 'art' --exp_name 'vangogh_uce_t2v'
+python trainscripts/uce_t2v_erase.py --model_id 'cerspense/zeroscope_v2_576w'  --edit_concepts 'lab' --guided_concepts '' --device 'cuda:0' --concept_type 'object' --exp_name 'eraselab_uce_t2v' --erase_scale 2
 ```
 
 ## Moderating
@@ -67,10 +67,10 @@ To moderate concepts (e.g. "violence, nudity, harm")
 python trainscripts/uce_flux_erase.py --model_id 'black-forest-labs/FLUX.1-schnell' --edit_concepts 'violence; nudity; harm' --device 'cuda:0' --concept_type 'unsafe' --exp_name 'i2p_flux'
 ```
 
-### ZeroScopeT2V
+### Video Model: ZeroScopeT2V
 To moderate concepts (e.g. "violence, nudity, harm")
 ```python
-python trainscripts/uce_t2v_erase.py --model_id 'cerspense/zeroscope_v2_576w' --edit_concepts 'violence; nudity; harm' --device 'cuda:0' --concept_type 'object' --exp_name 'i2p_t2v'
+python trainscripts/uce_t2v_erase.py --model_id 'cerspense/zeroscope_v2_576w' --edit_concepts 'violence; nudity; harm' --guided_concepts '' --device 'cuda:0' --concept_type 'object' --exp_name 'i2p_t2v'
 ```
 
 ## Debiasing

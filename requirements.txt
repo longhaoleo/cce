@@ -5,6 +5,7 @@ lpips==0.1.4
 matplotlib==3.10.1
 nudenet==3.4.2
 numpy==2.2.5
+opencv-python
 pandas==2.2.3
 Pillow==11.2.1
 Requests==2.32.3

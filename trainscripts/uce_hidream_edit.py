@@ -195,7 +195,7 @@ if __name__ == '__main__':
     
     parser.add_argument('--expand_prompts', help='do you wish to expand your prompts?', choices=['true', 'false'], type=str, required=False, default='false')
     
-    parser.add_argument('--save_dir', help='where to save your uce model weights', type=str, default='../uce_models')
+    parser.add_argument('--save_dir', help='where to save your uce model weights', type=str, default='uce_models')
     parser.add_argument('--exp_name', help='Use this to name your saved filename', type=str, default=None)
     
     args = parser.parse_args()

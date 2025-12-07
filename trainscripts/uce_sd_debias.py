@@ -163,7 +163,7 @@ if __name__ == '__main__':
     parser.add_argument('--preserve_scale', help='scale to preserve concepts', type=float, required=False, default=1)
     parser.add_argument('--lamb', help='lambda regularization term for UCE', type=float, required=False, default=0.5)
     
-    parser.add_argument('--save_dir', help='where to save your uce model weights', type=str, default='../uce_models')
+    parser.add_argument('--save_dir', help='where to save your uce model weights', type=str, default='uce_models')
     parser.add_argument('--exp_name', help='Use this to name your saved filename', type=str, default=None)
 
     parser.add_argument('--desired_ratios', type=float, nargs='+', 

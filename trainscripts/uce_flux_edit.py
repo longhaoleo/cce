@@ -132,13 +132,13 @@ if __name__ == '__main__':
     parser.add_argument('--model_id', help='Model to run UCE on', type=str, default="black-forest-labs/FLUX.1-schnell",)
     parser.add_argument('--device', help='cuda devices to train on', type=str, required=False, default='cuda:0')
     
-    parser.add_argument('--erase_scale', help='scale to erase concepts', type=float, required=False, default=1)
+    parser.add_argument('--erase_scale', help='scale to erase concepts', type=float, required=False, default=10)
     parser.add_argument('--preserve_scale', help='scale to preserve concepts', type=float, required=False, default=1)
-    parser.add_argument('--lamb', help='lambda regularization term for UCE', type=float, required=False, default=0.5)
+    parser.add_argument('--lamb', help='lambda regularization term for UCE', type=float, required=False, default=0.1)
     
     parser.add_argument('--expand_prompts', help='do you wish to expand your prompts?', choices=['true', 'false'], type=str, required=False, default='false')
     
-    parser.add_argument('--save_dir', help='where to save your uce model weights', type=str, default='../uce_models')
+    parser.add_argument('--save_dir', help='where to save your uce model weights', type=str, default='uce_models')
     parser.add_argument('--exp_name', help='Use this to name your saved filename', type=str, default=None)
     
     args = parser.parse_args()
