@@ -1,3 +1,6 @@
+"""
+进行“概念代数”实验：基于文本嵌入/投影生成图像。
+"""
 from transformers import CLIPTextModel, CLIPTokenizer
 from diffusers import AutoencoderKL, UNet2DConditionModel, PNDMScheduler
 from diffusers import LMSDiscreteScheduler

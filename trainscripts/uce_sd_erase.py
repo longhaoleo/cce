@@ -1,3 +1,7 @@
+"""
+SD/SDXL 的 UCE 擦除训练：更新交叉注意力 K/V 权重以擦除指定概念，
+可选保留其他概念，最后保存为 safetensors 权重增量供推理使用。
+"""
 import torch
 torch.set_grad_enabled(False)
 import argparse

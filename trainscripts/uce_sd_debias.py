@@ -1,3 +1,7 @@
+"""
+SD/SDXL 的 UCE 去偏训练：迭代调整交叉注意力 K/V 权重，使属性概念
+分布接近目标比例，最后保存为 safetensors 权重增量。
+"""
 import torch
 torch.set_grad_enabled(False)
 import argparse

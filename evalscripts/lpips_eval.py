@@ -1,3 +1,6 @@
+"""
+用 LPIPS 计算图像感知相似度指标。
+"""
 from __future__ import print_function
 
 import torch

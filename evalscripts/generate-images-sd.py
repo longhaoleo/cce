@@ -1,3 +1,6 @@
+"""
+使用 diffusers 生成图像，可加载 UCE 权重进行对比。
+"""
 from diffusers import DiffusionPipeline
 import torch
 from PIL import Image

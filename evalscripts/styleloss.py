@@ -1,3 +1,6 @@
+"""
+计算风格损失（style loss）用于评估。
+"""
 from __future__ import print_function
 
 import torch

@@ -1,3 +1,6 @@
+"""
+视觉-语言去偏相关计算与生成辅助函数。
+"""
 from transformers import CLIPTextModel, CLIPTokenizer
 from diffusers import AutoencoderKL, UNet2DConditionModel, PNDMScheduler
 from diffusers import LMSDiscreteScheduler

@@ -1,3 +1,6 @@
+"""
+使用 CLIP 对图片进行零样本分类，按属性统计并保存结果。
+"""
 from PIL import Image
 import requests
 import os, glob

@@ -1,3 +1,6 @@
+"""
+使用 torchvision 分类模型对图片做分类打分。
+"""
 from torchvision.models import vit_h_14, ViT_H_14_Weights, resnet50, ResNet50_Weights
 from torchvision.io import read_image
 from PIL import Image

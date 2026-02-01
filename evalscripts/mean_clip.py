@@ -1,3 +1,6 @@
+"""
+批量计算 CLIP 相似度的均值统计。
+"""
 from PIL import Image
 import requests
 import os, glob

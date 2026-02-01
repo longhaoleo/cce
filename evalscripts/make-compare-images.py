@@ -1,3 +1,6 @@
+"""
+生成对比拼图/可视化，用于不同方法结果对比。
+"""
 import os 
 import argparse
 from PIL import Image

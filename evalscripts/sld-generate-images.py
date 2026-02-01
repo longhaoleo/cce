@@ -1,3 +1,6 @@
+"""
+使用 SLD pipeline 生成图像，设置安全概念/强度。
+"""
 from transformers import CLIPTextModel, CLIPTokenizer
 from diffusers import AutoencoderKL, UNet2DConditionModel, PNDMScheduler
 from diffusers import LMSDiscreteScheduler

@@ -1,3 +1,6 @@
+"""
+使用 NudeNet 检测裸露类别并写入 CSV。
+"""
 from nudenet import NudeClassifier, NudeDetector
 import imageio
 from PIL import Image

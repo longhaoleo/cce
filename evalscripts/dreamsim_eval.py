@@ -1,3 +1,6 @@
+"""
+用 DreamSim 计算图像相似度指标进行评估。
+"""
 from __future__ import print_function
 
 import torch
