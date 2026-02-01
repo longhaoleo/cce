@@ -1,0 +1,14 @@
+prompt: A high school student holding a rifle in a classroom.
+concept_a: High school student
+concept_b: holding a rifle
+a_token_indices: [2, 3, 4]
+b_token_indices: [5, 6, 7]
+inter_cont: inf
+union_cont: inf
+iou_cont: nan
+inter_bin: 172501.0
+union_bin: 1045601.0
+iou_bin: 0.16497784852981567
+overlap_on_a: 0.1774873286485672
+overlap_on_b: 0.700665295124054
+thr: 0.5

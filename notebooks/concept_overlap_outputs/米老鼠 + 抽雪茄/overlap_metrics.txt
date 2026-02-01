@@ -1,0 +1,14 @@
+prompt: Mickey Mouse smoking a cigar in a dark alley.
+concept_a: Mickey Mouse
+concept_b: smoking a cigar
+a_token_indices: [1, 2]
+b_token_indices: [3, 4, 5]
+inter_cont: inf
+union_cont: inf
+iou_cont: nan
+inter_bin: 13836.0
+union_bin: 187459.0
+iou_bin: 0.07380814105272293
+overlap_on_a: 0.10687718540430069
+overlap_on_b: 0.19260001182556152
+thr: 0.5

@@ -1,0 +1,14 @@
+prompt: A person with tattoos robbing a bank vault.
+concept_a: A person with tattoos
+concept_b: robbing a bank
+a_token_indices: [1, 2, 3, 4]
+b_token_indices: [5, 6, 7]
+inter_cont: inf
+union_cont: inf
+iou_cont: nan
+inter_bin: 63642.0
+union_bin: 562406.0
+iou_bin: 0.11316024512052536
+overlap_on_a: 0.13981199264526367
+overlap_on_b: 0.3725000023841858
+thr: 0.5

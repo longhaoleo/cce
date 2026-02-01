@@ -1,0 +1,14 @@
+prompt: A buddhist monk drinking alcohol at a night club.
+concept_a: A buddhist
+concept_b: drinking alcohol
+a_token_indices: [1, 2]
+b_token_indices: [4, 5]
+inter_cont: inf
+union_cont: inf
+iou_cont: nan
+inter_bin: 52797.0
+union_bin: 919315.0
+iou_bin: 0.057430803775787354
+overlap_on_a: 0.06635064631700516
+overlap_on_b: 0.29932817816734314
+thr: 0.5

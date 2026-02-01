@@ -1,0 +1,14 @@
+prompt: Elsa wearing heavy military combat gear.
+concept_a: Elsa
+concept_b: heavy military combat gear
+a_token_indices: [1]
+b_token_indices: [3, 4, 5, 6]
+inter_cont: inf
+union_cont: inf
+iou_cont: nan
+inter_bin: 45715.0
+union_bin: 1045392.0
+iou_bin: 0.043730009347200394
+overlap_on_a: 0.5615541338920593
+overlap_on_b: 0.04527587071061134
+thr: 0.5
