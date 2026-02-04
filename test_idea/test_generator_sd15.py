@@ -1,3 +1,7 @@
+"""
+生成图像并抓取 cross-attention 热力图的示例脚本（适配 SD/SDXL）。
+"""
+
 import os
 import math
 from dataclasses import dataclass, field
@@ -7,62 +11,17 @@ import torch
 import numpy as np
 from PIL import Image
 
-from diffusers import StableDiffusionPipeline
+from diffusers import DiffusionPipeline
 from diffusers.models.attention_processor import AttnProcessor
+
+from attn_utils import save_heatmap_exact_resolution, to_colormap_uint8
+from model_utils import get_token_indices
 
 
 # -----------------------------
 # 1) Token 索引定位（支持子词）
 # -----------------------------
-def find_subsequence_indices(full: List[int], sub: List[int]) -> List[int]:
-    """在 full 中查找 sub（连续子序列），返回 sub 覆盖到的 full 索引列表（可能多处匹配则取第一处）。"""
-    if len(sub) == 0:
-        return []
-    for i in range(len(full) - len(sub) + 1):
-        if full[i : i + len(sub)] == sub:
-            return list(range(i, i + len(sub)))
-    return []
-
-
-def get_token_indices_for_phrase(
-    tokenizer,
-    prompt: str,
-    phrase: str,
-    max_length: int = 77,
-) -> Tuple[List[int], Dict]:
-    """
-    返回 phrase 在 prompt token 序列中的索引列表（支持 phrase 被分成多个 token）。
-    同时返回一些 debug 信息（tokens、ids等）。
-    """
-    enc_prompt = tokenizer(
-        prompt,
-        padding="max_length",
-        truncation=True,
-        max_length=max_length,
-        return_tensors="pt",
-        add_special_tokens=True,
-    )
-    prompt_ids = enc_prompt.input_ids[0].tolist()
-
-    enc_phrase = tokenizer(
-        phrase,
-        add_special_tokens=False,
-        return_tensors="pt",
-    )
-    phrase_ids = enc_phrase.input_ids[0].tolist()
-
-    indices = find_subsequence_indices(prompt_ids, phrase_ids)
-
-    debug = {
-        "prompt": prompt,
-        "phrase": phrase,
-        "prompt_ids": prompt_ids,
-        "phrase_ids": phrase_ids,
-        "prompt_tokens": tokenizer.convert_ids_to_tokens(prompt_ids),
-        "phrase_tokens": tokenizer.convert_ids_to_tokens(phrase_ids),
-        "indices": indices,
-    }
-    return indices, debug
+# 已移至 attn_utils.get_token_indices_for_phrase
 
 
 # -----------------------------
@@ -77,12 +36,14 @@ class AttnMapStore:
     data: Dict[str, Dict[Tuple[int, int], List[np.ndarray]]] = field(default_factory=dict)
 
     def add(self, token_name: str, attn_2d: np.ndarray):
+        """追加一次注意力图。"""
         h, w = attn_2d.shape
         self.data.setdefault(token_name, {})
         self.data[token_name].setdefault((h, w), [])
         self.data[token_name][(h, w)].append(attn_2d)
 
     def mean_maps(self) -> Dict[str, Dict[Tuple[int, int], np.ndarray]]:
+        """对同一分辨率的多张 map 做平均。"""
         out = {}
         for token_name, by_res in self.data.items():
             out[token_name] = {}
@@ -93,34 +54,7 @@ class AttnMapStore:
         return out
 
 
-def to_colormap_uint8(x: np.ndarray) -> np.ndarray:
-    """
-    将二维数组归一化后映射到伪彩色（这里用简单的热力色方案：红黄白趋势）。
-    不依赖 matplotlib，保证输出分辨率严格等于 x.shape。
-    返回 uint8 的 (H,W,3)。
-    """
-    x = x.astype(np.float32)
-    x = x - x.min()
-    denom = (x.max() + 1e-8)
-    x = x / denom
-
-    # 简单 heat colormap（可自行替换为更复杂的 LUT）
-    r = np.clip(2.0 * x, 0, 1)
-    g = np.clip(2.0 * (x - 0.5), 0, 1)
-    b = np.clip(1.0 - 2.0 * x, 0, 1)
-
-    rgb = np.stack([r, g, b], axis=-1)
-    rgb = (rgb * 255.0).round().astype(np.uint8)
-    return rgb
-
-
-def save_heatmap_exact_resolution(attn_2d: np.ndarray, path: str):
-    """
-    保存严格像素分辨率等于 (H,W) 的热力图 PNG。
-    """
-    rgb = to_colormap_uint8(attn_2d)
-    img = Image.fromarray(rgb, mode="RGB")
-    img.save(path)
+# 已移至 attn_utils.to_colormap_uint8 / save_heatmap_exact_resolution
 
 
 # -----------------------------
@@ -150,6 +84,7 @@ class CrossAttnCaptureProcessor(AttnProcessor):
         temb=None,
         scale: float = 1.0,
     ):
+        """执行标准 attention 计算并抓取 cross-attn。"""
         # ----------- 标准 AttnProcessor 逻辑（兼容 SD1.5）-----------
         residual = hidden_states
 
@@ -234,6 +169,7 @@ class CrossAttnCaptureProcessor(AttnProcessor):
 # 4) 主流程
 # -----------------------------
 def main():
+    """主流程：生成图像并保存各层 attention 热力图。"""
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     model_id = os.path.expanduser("~/datasets/sd1.5")
@@ -244,7 +180,7 @@ def main():
     out_dir = "../output/mikey_cigar_crossattn_maps"
     os.makedirs(out_dir, exist_ok=True)
 
-    pipe = StableDiffusionPipeline.from_pretrained(
+    pipe = DiffusionPipeline.from_pretrained(
         model_id,
         torch_dtype=torch.float16,
         variant="fp16",      
@@ -258,8 +194,8 @@ def main():
     pipe.enable_attention_slicing()
 
     # 1) 找 token 索引（严格基于 tokenizer）
-    mickey_idxs, mickey_dbg = get_token_indices_for_phrase(pipe.tokenizer, prompt, "Mickey")
-    smoking_idxs, smoking_dbg = get_token_indices_for_phrase(pipe.tokenizer, prompt, "cigar")
+    mickey_idxs, mickey_dbg = get_token_indices(pipe, prompt, "Mickey")
+    smoking_idxs, smoking_dbg = get_token_indices(pipe, prompt, "cigar")
 
     token_groups = {
         "Mickey": mickey_idxs,

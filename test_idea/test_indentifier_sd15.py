@@ -1,3 +1,7 @@
+"""
+因果定位（Causal Localization）脚本：对比扰动前后注意力图并生成 mask。
+"""
+
 import os
 import math
 from dataclasses import dataclass, field
@@ -7,47 +11,26 @@ import numpy as np
 import torch
 import matplotlib.pyplot as plt
 
-from diffusers import StableDiffusionPipeline
+from diffusers import DiffusionPipeline
 from diffusers.models.attention_processor import AttnProcessor
 
+from model_utils import get_token_indices, encode_prompt_for_pipe, zero_out_token_embeddings, is_sdxl
+# 输出 A/B 两种扰动下的注意力对比图，用于找到“哪块区域对移除 cigar 最敏感”，从而得到 mask。
 
-# -----------------------------
-# 1) Token 索引定位（支持子词）
-# -----------------------------
-def find_subsequence_indices(full: List[int], sub: List[int]) -> List[int]:
-    if len(sub) == 0:
-        return []
-    for i in range(len(full) - len(sub) + 1):
-        if full[i : i + len(sub)] == sub:
-            return list(range(i, i + len(sub)))
-    return []
+# 它输出的内容（每个分辨率一组）：
+
+# *_clean.png：不扰动时（正常 prompt）Mickey 对应的 cross-attn 热力图
+# *_modeA_grid.png：Mode A（去词） 的 4 联图
+# M_clean：正常 prompt 下 Mickey 的注意力
+# M_perturbed：删掉 cigar 后 Mickey 的注意力
+# Diff：两者差值（归一化）
+# Mask：阈值化后的二值 mask
+# *_modeB_grid.png：Mode B（embedding 置零） 的 4 联图
+# *_diff_modeA.png / *_diff_modeB.png：A/B 的差值图，方便横向对比
+# clean_image.png：一张正常生成的图，仅作视觉参考
 
 
-def get_token_indices_for_phrase(tokenizer, prompt: str, phrase: str) -> Tuple[List[int], Dict]:
-    max_len = tokenizer.model_max_length
-    enc_prompt = tokenizer(
-        prompt,
-        padding="max_length",
-        truncation=True,
-        max_length=max_len,
-        return_tensors="pt",
-        add_special_tokens=True,
-    )
-    prompt_ids = enc_prompt.input_ids[0].tolist()
-
-    enc_phrase = tokenizer(phrase, add_special_tokens=False, return_tensors="pt")
-    phrase_ids = enc_phrase.input_ids[0].tolist()
-
-    indices = find_subsequence_indices(prompt_ids, phrase_ids)
-
-    debug = {
-        "prompt": prompt,
-        "phrase": phrase,
-        "prompt_tokens": tokenizer.convert_ids_to_tokens(prompt_ids),
-        "phrase_tokens": tokenizer.convert_ids_to_tokens(phrase_ids),
-        "indices": indices,
-    }
-    return indices, debug
+# 已移至 attn_utils.get_token_indices_for_phrase
 
 
 # -----------------------------
@@ -58,9 +41,11 @@ class HeadMapStore:
     maps: List[np.ndarray] = field(default_factory=list)  # each: (heads, H, W)
 
     def add(self, head_map: np.ndarray):
+        """追加一张 head-wise 注意力图。"""
         self.maps.append(head_map)
 
     def mean(self) -> Optional[np.ndarray]:
+        """返回所有 head-wise 图的平均结果。"""
         if len(self.maps) == 0:
             return None
         return np.mean(np.stack(self.maps, axis=0), axis=0)  # (heads, H, W)
@@ -85,6 +70,7 @@ class BlockCrossAttnCaptureProcessor(AttnProcessor):
         self.capture_only_cond = capture_only_cond
 
     def __call__(self, attn, hidden_states, encoder_hidden_states=None, attention_mask=None, temb=None, scale: float = 1.0):
+        """执行 attention 计算并抓取 mid-block cross-attn。"""
         residual = hidden_states
 
         if getattr(attn, "spatial_norm", None) is not None:
@@ -159,42 +145,14 @@ class BlockCrossAttnCaptureProcessor(AttnProcessor):
         return hidden_states
 
 
-# -----------------------------
-# 3) Prompt embedding 编码（支持 mode B 的 embedding 置零）
-# -----------------------------
-def encode_prompt(pipe: StableDiffusionPipeline, prompt: str, device: torch.device, dtype: torch.dtype):
-    tok = pipe.tokenizer
-    max_len = tok.model_max_length
-
-    text_in = tok(prompt, padding="max_length", truncation=True, max_length=max_len, return_tensors="pt")
-    input_ids = text_in.input_ids.to(device)
-    attn_mask = text_in.attention_mask.to(device)
-
-    with torch.no_grad():
-        prompt_embeds = pipe.text_encoder(input_ids, attention_mask=attn_mask)[0].to(dtype)
-
-    neg_in = tok("", padding="max_length", truncation=True, max_length=max_len, return_tensors="pt")
-    neg_ids = neg_in.input_ids.to(device)
-    neg_mask = neg_in.attention_mask.to(device)
-
-    with torch.no_grad():
-        negative_embeds = pipe.text_encoder(neg_ids, attention_mask=neg_mask)[0].to(dtype)
-
-    return prompt_embeds, negative_embeds
-
-
-def zero_out_token_embeddings(prompt_embeds: torch.Tensor, token_indices: List[int]) -> torch.Tensor:
-    pe = prompt_embeds.clone()
-    for idx in token_indices:
-        if 0 <= idx < pe.shape[1]:
-            pe[:, idx, :] = 0
-    return pe
+# encode_prompt / zero_out_token_embeddings 已移至 model_utils
 
 
 # -----------------------------
 # 4) Causal Localization 核心：get_causal_mask
 # -----------------------------
 def minmax_normalize(x: np.ndarray) -> np.ndarray:
+    """对 2D 数组做 min-max 归一化。"""
     x = x.astype(np.float32)
     mn = float(x.min())
     mx = float(x.max())
@@ -202,7 +160,7 @@ def minmax_normalize(x: np.ndarray) -> np.ndarray:
 
 
 def get_causal_mask(
-    pipe: StableDiffusionPipeline,
+    pipe: DiffusionPipeline,
     prompt_clean: str,
     subj_word: str = "Mickey",
     obj_word: str = "smoking",
@@ -216,6 +174,7 @@ def get_causal_mask(
     target_hw: Tuple[int, int] = (16, 16),
     block_scope: Literal["mid", "up"] = "mid",
 ):
+    """两次前向（clean/perturbed）生成 Diff 与二值 Mask。"""
     device = pipe.device
     dtype = pipe.unet.dtype
 
@@ -232,8 +191,8 @@ def get_causal_mask(
     )
 
     # 2) token 索引（严格基于 tokenizer）
-    subj_idxs, subj_dbg = get_token_indices_for_phrase(pipe.tokenizer, prompt_clean, subj_word)
-    obj_idxs, obj_dbg = get_token_indices_for_phrase(pipe.tokenizer, prompt_clean, obj_word)
+    subj_idxs, subj_dbg = get_token_indices(pipe, prompt_clean, subj_word)
+    obj_idxs, obj_dbg = get_token_indices(pipe, prompt_clean, obj_word)
 
     if not subj_idxs:
         raise ValueError(f"找不到主体词 {subj_word} 在 prompt 中的 token span。")
@@ -265,11 +224,10 @@ def get_causal_mask(
     clean_store = HeadMapStore()
     patch_block_attn2(clean_store)
 
-    pe_clean, ne_clean = encode_prompt(pipe, prompt_clean, device=device, dtype=dtype)
+    enc_clean = encode_prompt_for_pipe(pipe, prompt_clean, device=device, dtype=dtype)
     _ = pipe(
         prompt=None,
-        prompt_embeds=pe_clean,
-        negative_prompt_embeds=ne_clean,
+        **enc_clean,
         height=height,
         width=width,
         guidance_scale=guidance_scale,
@@ -289,18 +247,21 @@ def get_causal_mask(
     if mode.upper() == "A":
         # 方式 A：直接去掉 smoking
         prompt_pert = " ".join([w for w in prompt_clean.split() if w.lower() != obj_word.lower()])
-        pe_pert, ne_pert = encode_prompt(pipe, prompt_pert, device=device, dtype=dtype)
+        enc_pert = encode_prompt_for_pipe(pipe, prompt_pert, device=device, dtype=dtype)
     elif mode.upper() == "B":
         # 方式 B：保持 prompt 不变，但把 smoking 的 embedding 置零
-        pe_pert, ne_pert = encode_prompt(pipe, prompt_clean, device=device, dtype=dtype)
-        pe_pert = zero_out_token_embeddings(pe_pert, obj_idxs)
+        if is_sdxl(pipe):
+            # SDXL 下也可以 zero，但默认仍建议用 A（更稳定）
+            enc_pert = encode_prompt_for_pipe(pipe, prompt_clean, device=device, dtype=dtype)
+        else:
+            enc_pert = encode_prompt_for_pipe(pipe, prompt_clean, device=device, dtype=dtype)
+        enc_pert["prompt_embeds"] = zero_out_token_embeddings(enc_pert["prompt_embeds"], obj_idxs)
     else:
         raise ValueError("mode 必须是 'A' 或 'B'。")
 
     _ = pipe(
         prompt=None,
-        prompt_embeds=pe_pert,
-        negative_prompt_embeds=ne_pert,
+        **enc_pert,
         height=height,
         width=width,
         guidance_scale=guidance_scale,
@@ -339,6 +300,7 @@ def get_causal_mask(
 # 5) 可视化
 # -----------------------------
 def save_grid_four(path: str, title: str, M_clean: np.ndarray, M_pert: np.ndarray, Diff: np.ndarray, Mask: np.ndarray):
+    """保存 4 联图（clean / perturbed / diff / mask）。"""
     fig = plt.figure(figsize=(10, 9))
     ax1 = plt.subplot(2, 2, 1); ax1.imshow(M_clean); ax1.set_title("M_clean (Mickey)"); ax1.axis("off")
     ax2 = plt.subplot(2, 2, 2); ax2.imshow(M_pert);  ax2.set_title("M_perturbed (Mickey)"); ax2.axis("off")
@@ -351,6 +313,7 @@ def save_grid_four(path: str, title: str, M_clean: np.ndarray, M_pert: np.ndarra
 
 
 def save_single(path: str, title: str, img: np.ndarray):
+    """保存单张热力图到磁盘。"""
     fig = plt.figure(figsize=(4, 4))
     ax = plt.subplot(1, 1, 1); ax.imshow(img); ax.set_title(title); ax.axis("off")
     plt.tight_layout()
@@ -359,12 +322,15 @@ def save_single(path: str, title: str, img: np.ndarray):
 
 
 def main():
+    """主流程：生成 A/B 两种扰动对比图，并保存 clean 图。"""
     prompt = "Mickey Mouse smoking a cigar in a dark alley"
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    height, width = 512, 512
+    seed = 1234
 
     model_id = os.path.expanduser("~/datasets/sd1.5")
-    pipe = StableDiffusionPipeline.from_pretrained(
+    pipe = DiffusionPipeline.from_pretrained(
         model_id,
         torch_dtype=torch.float16,
         variant="fp16",      
@@ -379,10 +345,15 @@ def main():
     out_dir = os.path.join(os.path.dirname(__file__), "..", "output", "causal_compare")
     os.makedirs(out_dir, exist_ok=True)
 
+    # mid 分辨率 = H/64, W/64；up-block 分辨率依次为 H/32、H/16、H/8
+    mid_hw = (height // 64, width // 64)
+    up_hw_32 = (height // 16, width // 16)
+    up_hw_64 = (height // 8, width // 8)
+
     configs = [
-        ("mid", (16, 16)),
-        ("up", (32, 32)),
-        ("up", (64, 64)),
+        ("mid", mid_hw),
+        ("up", up_hw_32),
+        ("up", up_hw_64),
     ]
 
     for block_scope, target_hw in configs:
@@ -397,8 +368,8 @@ def main():
             mode="A",
             tau=0.2,
             seed=1234,
-            height=512,
-            width=512,
+            height=height,
+            width=width,
             num_inference_steps=10,
             guidance_scale=7.5,
             target_hw=target_hw,
@@ -414,8 +385,8 @@ def main():
             mode="B",
             tau=0.2,
             seed=1234,
-            height=512,
-            width=512,
+            height=height,
+            width=width,
             num_inference_steps=10,
             guidance_scale=7.5,
             target_hw=target_hw,
@@ -447,7 +418,22 @@ def main():
         save_single(os.path.join(out_dir, f"{tag}_diff_modeA.png"), f"Diff A @ {tag}", Diff_A)
         save_single(os.path.join(out_dir, f"{tag}_diff_modeB.png"), f"Diff B @ {tag}", Diff_B)
 
-    print(f"Saved comparisons to: {out_dir}")
+    # # 额外保存一张 clean 图，方便对照
+    # generator = torch.Generator(device=device).manual_seed(seed)
+    # with torch.autocast(device_type=device, enabled=(device == "cuda")):
+    #     result = pipe(
+    #         prompt=prompt,
+    #         height=height,
+    #         width=width,
+    #         num_inference_steps=30,
+    #         guidance_scale=7.5,
+    #         generator=generator,
+    #     )
+    # clean_path = os.path.join(out_dir, "clean_image.png")
+    # result.images[0].save(clean_path)
+
+    # print(f"Saved clean image to: {clean_path}")
+    # print(f"Saved comparisons to: {out_dir}")
 
 
 if __name__ == "__main__":
