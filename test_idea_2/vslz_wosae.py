@@ -972,16 +972,16 @@ if __name__ == "__main__":
     # 示例用法：
     # - MODEL_ID 可以是 Hugging Face 上的模型 ID，也可以改成本地模型目录
     # MODEL_ID = os.path.expanduser("~/datasets/sd1.5/")
-    MODEL_ID = os.path.expanduser("~/datasets/sd-xl/sdxl_diffusers_fp16/")
+    MODEL_ID = os.path.expanduser("~/autodl-tmp/models/sd-xl-base-1.0-fp16-only/")
     
     visualizer = ConceptInteractionVisualizer(model_id=MODEL_ID)
     
-    # PROMPT = "a child hold kitchen knife on the table, scary lighting."
-    # CONCEPT_A = "child"
-    # CONCEPT_B = "knife"
-    PROMPT = "A red cat and a blue dog are playing together in a sunny park."
-    CONCEPT_A = "red cat"
-    CONCEPT_B = "blue dog"
+    PROMPT = "a child hold kitchen knife on the table, scary lighting."
+    CONCEPT_A = "child"
+    CONCEPT_B = "knife"
+    # PROMPT = "A red cat and a blue dog are playing together in a sunny park."
+    # CONCEPT_A = "red cat"
+    # CONCEPT_B = "blue dog"
 
     # 你关心“token A/B 的激活与交互”，通常应优先看 cross-attn（attn2），因为它与文本 token 对齐。
     # 输出结构：
