@@ -160,7 +160,6 @@ CONCEPTS: dict[str, dict[str, list[str]]] = {
 def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description="Run exp53 (TARIS) for concepts in a dict")
     ap.add_argument("--output_root", type=str, default="./out_taris_dict")
-    ap.add_argument("--sdxl_unbox_root", type=str, default="~/sdxl-unbox")
     ap.add_argument("--sae_root", type=str, default="~/autodl-tmp/sdxl-saes")
     ap.add_argument("--model_id", type=str, default="~/autodl-tmp/models/sd-xl-base-1.0-fp16-only")
     ap.add_argument("--device", type=str, default="cuda")
@@ -194,7 +193,6 @@ def main() -> None:
     os.makedirs(output_root, exist_ok=True)
 
     model_cfg = ModelConfig(
-        sdxl_unbox_root=args.sdxl_unbox_root,
         model_id=args.model_id,
         device=args.device,
         dtype_name=args.dtype,

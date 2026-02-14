@@ -18,7 +18,6 @@ DEFAULT_BLOCKS = [
 class ModelConfig:
     """SDXL 模型基础配置。"""
 
-    sdxl_unbox_root: str = "~/sdxl-unbox"
     model_id: str = "~/datasets/sd-xl/sdxl_diffusers_fp16"
     device: str = "cuda"
     dtype_name: str = "fp16"

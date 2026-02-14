@@ -39,7 +39,6 @@ def parse_args() -> argparse.Namespace:
         help="实验编号",
     )
 
-    parser.add_argument("--sdxl_unbox_root", type=str, default="~/sdxl-unbox")
     parser.add_argument("--sae_root", type=str, default="~/sdxl-saes")
     parser.add_argument("--model_id", type=str, default="~/datasets/sd-xl/sdxl_diffusers_fp16")
     parser.add_argument("--device", type=str, default="cpu")
@@ -127,7 +126,6 @@ def parse_args() -> argparse.Namespace:
 def build_configs(args: argparse.Namespace):
     """根据 CLI 参数构建实验所需的配置对象。"""
     model_cfg = ModelConfig(
-        sdxl_unbox_root=args.sdxl_unbox_root,
         model_id=args.model_id,
         device=args.device,
         dtype_name=args.dtype,

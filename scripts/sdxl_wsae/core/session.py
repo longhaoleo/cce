@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import os
-import sys
 from pathlib import Path
-from types import ModuleType
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -42,41 +40,8 @@ def _resolve_device_dtype(device: str, dtype: torch.dtype) -> Tuple[str, torch.d
     return device, dtype
 
 
-def _module_in_root(module: ModuleType, root: Path) -> bool:
-    """判断已加载模块是否来自目标根目录。"""
-    mod_file = getattr(module, "__file__", None)
-    if mod_file is None:
-        return False
-    try:
-        return Path(mod_file).resolve().is_relative_to(root)
-    except Exception:
-        return False
-
-
-def _import_hooked_sdxl_pipeline_cls(sdxl_unbox_root: str):
-    """
-    从指定 sdxl-unbox 路径导入 HookedStableDiffusionXLPipeline。
-
-    只处理 SDLens 导入，不改动仓库内 SAE 包的导入。
-    """
-    root = Path(os.path.expanduser(sdxl_unbox_root)).resolve()
-    if not root.exists():
-        raise FileNotFoundError(f"sdxl_unbox_root 不存在: {root}")
-
-    root_str = str(root)
-    # 强制把目标路径放在导入搜索的最前面，避免串到其他同名包。
-    if root_str in sys.path:
-        sys.path.remove(root_str)
-    sys.path.insert(0, root_str)
-
-    for mod_name in ("SDLens", "SDLens.hooked_sd_pipeline"):
-        mod = sys.modules.get(mod_name)
-        if mod is None:
-            continue
-        # 如果已加载模块并非来自目标根目录，则剔除后重新导入。
-        if not _module_in_root(mod, root):
-            sys.modules.pop(mod_name, None)
-
+def _import_hooked_sdxl_pipeline_cls():
+    """导入仓库内置的 HookedStableDiffusionXLPipeline（SDLens 已在仓库中）。"""
     from SDLens.hooked_sd_pipeline import HookedStableDiffusionXLPipeline
 
     return HookedStableDiffusionXLPipeline
@@ -158,7 +123,7 @@ class SDXLExperimentSession:
             model_cfg.device,
             _resolve_dtype(model_cfg.dtype_name),
         )
-        self.HookedStableDiffusionXLPipeline = _import_hooked_sdxl_pipeline_cls(model_cfg.sdxl_unbox_root)
+        self.HookedStableDiffusionXLPipeline = _import_hooked_sdxl_pipeline_cls()
         self.pipe = self._load_pipeline()
         self.resolver = SAECheckpointResolver(
             sae_cfg.sae_root,
