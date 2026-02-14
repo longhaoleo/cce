@@ -18,7 +18,7 @@ GlobalScore(i) = (1/|T|) * sum_{t in T} [ mu_c(i,t)/(E_c(t)+δ) - mu_nc(i,t)/(E_
 """
 
 from __future__ import annotations
-
+import seaborn as sns
 import csv
 import os
 from dataclasses import replace
@@ -201,7 +201,10 @@ def run_exp53_concept_locator_taris(
     # 4) 输出 Top-K（正向/反向都给一份，便于看“反概念特征”）
     k = max(1, int(concept_cfg.top_k))
     top_pos_vals, top_pos_ids = torch.topk(scores, k=min(k, int(scores.numel())))
-    # 说明：这里仅输出“正向端”Top-K（scores 最大的一侧）。
+    
+    # 2. 获取 Top-K Negative (反概念特征，即在负样本中显著的特征)
+    # 使用 largest=False 获取最小的数（即负得最多的）
+    top_neg_vals, top_neg_ids = torch.topk(scores, k=min(k, int(scores.numel())), largest=False)
 
     # 输出目录组织：
     # - 传了 concept_name：output_dir/exp53_taris/{concept_name}/
@@ -264,51 +267,11 @@ def run_exp53_concept_locator_taris(
     plt.savefig(os.path.join(out_dir, "taris_scores_hist.png"), dpi=150)
     plt.close()
 
-    # 6) “只有少数比较大吗？”最直观的两张图：
-    # - Rank 曲线：把得分按大小排序，画 score(rank)，尾部是否陡峭一眼就能看出来
-    # - 累积贡献：Top-x% 的特征累积贡献了多少“正向得分质量”(mass)
+
     s = scores.detach().float().cpu().numpy().astype(np.float64)
     s_sorted = np.sort(s)[::-1]  # 从大到小
 
-    # Rank plot：rank 维度非常长，用对数 x 轴更容易同时看清头部与长尾
-    plt.figure(figsize=(10, 4))
-    ranks = np.arange(1, len(s_sorted) + 1, dtype=np.int64)
-    plt.plot(ranks, s_sorted, linewidth=1.0)
-    plt.axhline(0.0, color="black", linewidth=1.0, alpha=0.6)
-    plt.xscale("log")
-    plt.xlabel("feature rank (log scale, sorted by TARIS score desc)")
-    plt.ylabel("TARIS score")
-    plt.title("TARIS Scores Rank Plot (Descending, log-rank)")
-    plt.grid(alpha=0.2)
-    plt.tight_layout()
-    plt.savefig(os.path.join(out_dir, "taris_scores_rank.png"), dpi=150)
-    plt.close()
-
-    # Cumulative mass on positive scores
-    pos = s_sorted[s_sorted > 0]
-    if pos.size > 0:
-        cum = np.cumsum(pos)
-        total = float(cum[-1])
-        frac_feat = (np.arange(1, pos.size + 1) / float(pos.size))
-        frac_mass = cum / max(total, 1e-12)
-
-        plt.figure(figsize=(10, 4))
-        plt.plot(frac_feat, frac_mass, linewidth=2.0)
-        plt.xlabel("fraction of positive-scoring features (top -> tail)")
-        plt.ylabel("fraction of total positive score mass")
-        plt.title("TARIS Positive Mass Concentration (Cumulative)")
-        plt.grid(alpha=0.2)
-        plt.tight_layout()
-        plt.savefig(os.path.join(out_dir, "taris_positive_mass_cumulative.png"), dpi=150)
-        plt.close()
-
-        # 打印几个常用分位点，帮助你快速判断“少数特征是否占大头”
-        for pct in (0.01, 0.05, 0.10):
-            k_feat = max(1, int(round(pct * pos.size)))
-            mass_pct = float(cum[k_feat - 1] / max(total, 1e-12))
-            print(f"[exp53] Top {int(pct*100)}% positive features capture {mass_pct*100:.2f}% positive mass")
-
-    # 5) 画一个简单曲线图：Top-5 特征在正/负集合上随 step 的平均激活（便于检查“稳态”）
+    # 画一个简单曲线图：Top-5 特征在正/负集合上随 step 的平均激活（便于检查“稳态”）
     curve_k = min(5, int(top_pos_ids.numel()))
     if curve_k > 0:
         plt.figure(figsize=(10, 4))
@@ -325,6 +288,101 @@ def run_exp53_concept_locator_taris(
         plt.tight_layout()
         plt.savefig(os.path.join(out_dir, "taris_top_curves.png"), dpi=150)
         plt.close()
+
+    # 保存 CSV (分别保存正向和负向)
+    _save_topk_csv(os.path.join(out_dir, "top_positive_features.csv"), top_pos_ids, top_pos_vals)
+    _save_topk_csv(os.path.join(out_dir, "top_negative_features.csv"), top_neg_ids, top_neg_vals)
+
+    # ==========================================
+    #      可视化升级：让结果“看得见、摸得着”
+    # ==========================================
+
+    # Visualization 1: 蝴蝶图 (Diverging Bar Chart)
+    # 直观展示：红色代表概念，蓝色代表反概念，中间是无关特征
+    plt.figure(figsize=(10, 6))
+    
+    # 取两头各 20 个特征画图
+    disp_k = 20
+    pos_v = top_pos_vals[:disp_k].cpu().numpy()[::-1] # 倒序，让最大的在最上面
+    neg_v = top_neg_vals[:disp_k].cpu().numpy()[::-1] # 负值
+    
+    y_pos = np.arange(len(pos_v))
+    
+    plt.barh(y_pos, pos_v, color='#d62728', label='Positive (Concept)', alpha=0.8)
+    plt.barh(y_pos, neg_v, color='#1f77b4', label='Negative (Anti-Concept)', alpha=0.8)
+    
+    plt.axvline(0, color='black', linewidth=0.8)
+    plt.title(f"Top TARIS Scores: {concept_name} vs Anti-Concept")
+    plt.xlabel("TARIS Score (Relative Importance Diff)")
+    plt.yticks([]) # 隐藏具体 ID，只看分布态势
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(os.path.join(out_dir, "viz_1_butterfly_chart.png"), dpi=150)
+    plt.close()
+
+    # Visualization 2: 差分动力学曲线 (Differential Dynamics)
+    # 展示 Top-5 特征的 (Pos - Neg) 随时间变化，看它们在哪个时间段“发力”
+    plt.figure(figsize=(12, 5))
+    xs = list(range(int(pos_mu.shape[0])))
+    
+    # 只画 Top-5 Positive
+    viz_k = 5
+    colors = plt.cm.Reds(np.linspace(0.5, 1, viz_k))
+    
+    for i in range(viz_k):
+        fid = int(top_pos_ids[i].item())
+        # 计算差值：这就是 TARIS 的分子部分随时间的变化
+        # 归一化一下便于在同一张图显示趋势
+        diff_curve = (pos_mu[:, fid] - neg_mu[:, fid]).cpu().numpy()
+        
+        plt.plot(xs, diff_curve, color=colors[viz_k-1-i], linewidth=2, label=f"Feat {fid}")
+        
+        # 标出峰值位置
+        peak_idx = np.argmax(diff_curve)
+        plt.scatter(peak_idx, diff_curve[peak_idx], color=colors[viz_k-1-i], s=30)
+
+    plt.axhline(0, color='gray', linestyle='--', alpha=0.5)
+    plt.xlabel("Timesteps (Generation Steps)")
+    plt.ylabel("Activity Difference (Pos - Neg)")
+    plt.title(f"When do the Top Features act? (Time Dynamics)")
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(os.path.join(out_dir, "viz_2_diff_dynamics.png"), dpi=150)
+    plt.close()
+
+    # Visualization 3: 特征流热力图 (The Waterfall / Heatmap) —— 最核心的图！
+    # X轴：时间，Y轴：Top-50 特征（按峰值时间排序）
+    # 这张图能证明你的 ODE 流动理论
+    
+    heatmap_k = 50
+    target_ids = top_pos_ids[:heatmap_k].cpu()
+    
+    # 提取这些特征在 Positive Prompt 下的激活矩阵 [Steps, K]
+    # 注意：这里我们看 Pos 激活，因为我们关注概念是如何生成的
+    act_matrix = pos_mu[:, target_ids].cpu().numpy().T  # 转置为 [K, Steps]
+    
+    # 为了热力图好看，对每个特征做 Min-Max 归一化，这样无论强弱都能看到“亮起”的时间
+    row_mins = act_matrix.min(axis=1, keepdims=True)
+    row_maxs = act_matrix.max(axis=1, keepdims=True) + 1e-6
+    act_norm = (act_matrix - row_mins) / (row_maxs - row_mins)
+    
+    # 关键步骤：按“峰值出现时间”对特征进行排序
+    peak_times = np.argmax(act_norm, axis=1) # 找到每个特征最亮的时间点
+    sorted_indices = np.argsort(peak_times)  # 按时间排序
+    act_sorted = act_norm[sorted_indices]
+    
+    plt.figure(figsize=(12, 8))
+    sns.heatmap(act_sorted, cmap="viridis", cbar_kws={'label': 'Normalized Activation'})
+    
+    plt.title(f"Feature Flow Waterfall: Top {heatmap_k} Concept Features")
+    plt.xlabel("Generation Steps (Noise -> Image)")
+    plt.ylabel(f"Features (Sorted by Peak Time)")
+    plt.yticks([]) # 隐藏 Y 轴 label 避免拥挤
+    plt.tight_layout()
+    plt.savefig(os.path.join(out_dir, "viz_3_waterfall_flow.png"), dpi=150)
+    plt.close()
+
 
     print(f"[exp53] 输出目录: {out_dir}")
     print(f"[exp53] Top+ (scores 最大) feature ids: {top_pos_ids[:10].tolist()}")
