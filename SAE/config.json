@@ -1,0 +1,24 @@
+{
+    "sae_configs": [
+        {
+            "d_model": 1280,
+            "n_dirs": 5120,
+            "k": 20
+        }
+    ],
+    "n_epochs": 1,
+    "bs": 4096,
+    "log_interval": 500,
+    "save_interval": 5000,
+
+    "paths_to_latents": [ 
+        "path/to/latents/dir1",
+        "path/to/latents/dir2",
+        "path/to/latents/dir3"
+    ],
+    "save_path_base": "proj_directory/sd14-ckpts", 
+    "block_name": "unet.up_blocks.1.attentions.0",
+    "uncond_or_cond": "cond",
+    "timestep": "last",
+    "custom_name": ""
+}
