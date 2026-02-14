@@ -4,4 +4,4 @@ uce_models
 uce_results
 models
 notebooks/trainnotebooks
-test_idea*
+test_idea_*/

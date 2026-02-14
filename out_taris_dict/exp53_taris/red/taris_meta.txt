@@ -1,0 +1,9 @@
+block=unet.mid_block.attentions.0
+pos_prompts=['a photo of a red apple', 'a shiny red car', 'a woman wearing a red dress', 'a red rose in a vase', 'a red book on the table']
+neg_prompts=['a photo of a green apple', 'a shiny blue car', 'a woman wearing a black dress', 'a white rose in a vase', 'a yellow book on the table']
+t_start=800
+t_end=200
+num_t_samples=10
+delta=1e-06
+selected_step_indices=[5, 6, 8, 10, 12, 14, 16, 18, 20, 22]
+selected_timesteps=[793, 760, 694, 628, 562, 496, 430, 364, 298, 232]

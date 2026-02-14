@@ -10,7 +10,7 @@ import numpy as np
 import torch
 
 from SAE.sae import SparseAutoencoder
-
+from SDLens.hooked_sd_pipeline import HookedStableDiffusionXLPipeline
 from ..configs import ModelConfig, RunConfig, SAEConfig
 
 
@@ -39,12 +39,6 @@ def _resolve_device_dtype(device: str, dtype: torch.dtype) -> Tuple[str, torch.d
         return "cpu", torch.float32
     return device, dtype
 
-
-def _import_hooked_sdxl_pipeline_cls():
-    """导入仓库内置的 HookedStableDiffusionXLPipeline（SDLens 已在仓库中）。"""
-    from SDLens.hooked_sd_pipeline import HookedStableDiffusionXLPipeline
-
-    return HookedStableDiffusionXLPipeline
 
 
 class SAECheckpointResolver:
@@ -123,7 +117,7 @@ class SDXLExperimentSession:
             model_cfg.device,
             _resolve_dtype(model_cfg.dtype_name),
         )
-        self.HookedStableDiffusionXLPipeline = _import_hooked_sdxl_pipeline_cls()
+        self.HookedStableDiffusionXLPipeline = HookedStableDiffusionXLPipeline
         self.pipe = self._load_pipeline()
         self.resolver = SAECheckpointResolver(
             sae_cfg.sae_root,
@@ -134,25 +128,35 @@ class SDXLExperimentSession:
 
     def _load_pipeline(self):
         """
-        加载 SDXL pipeline，并尽量使用目标 dtype。
-
-        采用两段回退策略：
-        1) 先带 `torch_dtype` 加载；
-        2) 若失败，再不带 dtype 参数重试。
+        优化后的加载策略：
+        1. 优先尝试 fp16 变体 + 目标 dtype
+        2. 失败则尝试默认变体 + 目标 dtype (处理有 safetensors 但没标 fp16 变体的情况)
+        3. 最后尝试完全默认加载 (万能回退)
         """
-        model_id = os.path.expanduser(self.model_cfg.model_id)
-        attempts = [{"torch_dtype": self.dtype}, {}]
-        last_err: Optional[BaseException] = None
-        for kwargs in attempts:
-            try:
-                print(f"加载 SDXL pipeline: {model_id} kwargs={list(kwargs.keys())}")
-                pipe = self.HookedStableDiffusionXLPipeline.from_pretrained(model_id, **kwargs)
-                return pipe.to(self.device)
-            except Exception as exc:
-                last_err = exc
-        assert last_err is not None
-        raise last_err
 
+        model_id = os.path.expanduser(self.model_cfg.model_id)
+    
+        # 定义加载尝试的优先级队列
+        # 每一个 dict 代表一组从高到低尝试的参数
+        load_attempts = [
+            {"torch_dtype": self.dtype, "variant": "fp16", "use_safetensors": True},
+            {"torch_dtype": self.dtype, "use_safetensors": True},
+            {} ]
+        last_err = None
+        for kwargs in load_attempts:
+            try:
+                print(f"尝试加载 SDXL: {model_id} | 参数: {kwargs}")
+                pipe = self.HookedStableDiffusionXLPipeline.from_pretrained(
+                    model_id, 
+                    **kwargs)
+                return pipe.to(self.device)
+            except Exception as e:
+                last_err = e
+                print(f"当前配置加载失败，尝试下一方案... (错误: {e})")
+                continue
+        raise RuntimeError(f"所有加载方案均失败。最后一次报错: {last_err}")
+
+        
     def load_saes(self, blocks: Optional[Sequence[str]] = None) -> Dict[str, torch.nn.Module]:
         """加载指定 block 的 SAE；若为 None 则加载 SAEConfig 中全部 block。"""
         target_blocks = list(blocks) if blocks is not None else list(self.sae_cfg.blocks)
