@@ -228,11 +228,10 @@ def run_exp53_concept_locator_taris(
         f.write(f"selected_step_indices={list(map(int, step_indices))}\n")
         f.write(f"selected_timesteps={[int(pos_timesteps[i]) for i in step_indices]}\n")
 
-    _save_topk_csv(
-        os.path.join(out_dir, "taris_top_positive.csv"),
-        top_ids=top_pos_ids,
-        top_vals=top_pos_vals,
-    )
+
+    # 保存 CSV (分别保存正向和负向)
+    _save_topk_csv(os.path.join(out_dir, "top_positive_features.csv"),top_ids=top_pos_ids,top_vals=top_pos_vals)
+    _save_topk_csv(os.path.join(out_dir, "top_negative_features.csv"),top_ids=top_neg_ids,top_vals=top_neg_vals)
 
     # 保存一份 tensor 包，后续你可以直接加载做更多统计/可视化
     torch.save(
@@ -289,9 +288,7 @@ def run_exp53_concept_locator_taris(
         plt.savefig(os.path.join(out_dir, "taris_top_curves.png"), dpi=150)
         plt.close()
 
-    # 保存 CSV (分别保存正向和负向)
-    _save_topk_csv(os.path.join(out_dir, "top_positive_features.csv"), top_pos_ids, top_pos_vals)
-    _save_topk_csv(os.path.join(out_dir, "top_negative_features.csv"), top_neg_ids, top_neg_vals)
+
 
     # ==========================================
     #      可视化升级：让结果“看得见、摸得着”

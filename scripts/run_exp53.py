@@ -164,7 +164,7 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--model_id", type=str, default="~/autodl-tmp/models/sd-xl-base-1.0-fp16-only")
     ap.add_argument("--device", type=str, default="cuda")
     ap.add_argument("--dtype", type=str, default="fp16")
-    ap.add_argument("--prefer_k", type=int, default=5)
+    ap.add_argument("--prefer_k", type=int, default=10)
     ap.add_argument("--prefer_hidden", type=int, default=5120)
 
     ap.add_argument("--loc_block", type=str, default="unet.mid_block.attentions.0")
