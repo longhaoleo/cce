@@ -6,7 +6,7 @@ import os
 
 from ..configs import CausalInterventionConfig, RunConfig, SAEConfig
 from ..utils import ensure_dir
-from .exp04_causal_intervention import run_exp04_causal_intervention
+from .exp54_causal_intervention import run_exp54_causal_intervention
 
 
 def run_exp05_structure_aspect(
@@ -27,4 +27,4 @@ def run_exp05_structure_aspect(
     subdir = os.path.join(output_dir, "exp05_structure_aspect")
     ensure_dir(subdir)
     print("实验 5 当前采用实验 4 的注入实现，请确保选择的 feature_id 已与结构/画幅相关。")
-    run_exp04_causal_intervention(model_cfg, sae_cfg, run_cfg, int_cfg, subdir)
+    run_exp54_causal_intervention(model_cfg, sae_cfg, run_cfg, int_cfg, subdir)

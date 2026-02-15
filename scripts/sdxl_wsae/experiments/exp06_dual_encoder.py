@@ -6,7 +6,7 @@ import os
 
 from ..configs import CausalInterventionConfig, RunConfig, SAEConfig
 from ..utils import ensure_dir
-from .exp04_causal_intervention import run_exp04_causal_intervention
+from .exp54_causal_intervention import run_exp54_causal_intervention
 
 
 def run_exp06_dual_encoder(
@@ -28,4 +28,4 @@ def run_exp06_dual_encoder(
     subdir = os.path.join(output_dir, "exp06_dual_encoder")
     ensure_dir(subdir)
     print("实验 6 当前为单特征干预入口，请分别传入语义/风格 feature_id 各跑一次。")
-    run_exp04_causal_intervention(model_cfg, sae_cfg, run_cfg, int_cfg, subdir)
+    run_exp54_causal_intervention(model_cfg, sae_cfg, run_cfg, int_cfg, subdir)

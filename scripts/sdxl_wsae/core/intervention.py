@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Optional, Tuple
+from typing import Any, List, Optional, Sequence, Tuple
 
 import torch
 
@@ -13,7 +13,8 @@ class InterventionSpec:
     """单个特征干预配置。"""
 
     block: str
-    feature_id: int
+    feature_ids: Tuple[int, ...] = ()
+    feature_scales: Tuple[float, ...] = ()
     mode: str = "injection"  # injection | ablation
     scale: float = 1.0
     t_start: int = 600
@@ -21,6 +22,22 @@ class InterventionSpec:
     step_start: Optional[int] = None
     step_end: Optional[int] = None
     apply_only_conditional: bool = True
+
+
+def _resolve_feature_list(spec: InterventionSpec) -> Tuple[List[int], List[float]]:
+    """把 spec 的单特征/多特征参数统一成列表形式，保持向后兼容。"""
+    ids = [int(x) for x in spec.feature_ids]
+    if not ids:
+        raise ValueError("feature_ids 不能为空。")
+
+    if spec.feature_scales:
+        scales = [float(x) for x in spec.feature_scales]
+        if len(scales) != len(ids):
+            raise ValueError("feature_scales 长度必须与 feature_ids 相同。")
+    else:
+        scales = [1.0 for _ in ids]
+
+    return ids, scales
 
 
 def _extract_tensor(output: Any) -> Tuple[torch.Tensor, bool]:
@@ -99,9 +116,12 @@ def _in_time_window(
     spec: InterventionSpec,
 ) -> bool:
     """判断当前 hook 时刻是否在干预窗口内。"""
-    if spec.step_start is not None and spec.step_end is not None:
-        lo, hi = sorted([int(spec.step_start), int(spec.step_end)])
-        if not (lo <= step_idx <= hi):
+    # step 窗口（如果用户提供了 step 边界，优先生效；允许只给一边）
+    if spec.step_start is not None:
+        if step_idx < int(spec.step_start):
+            return False
+    if spec.step_end is not None:
+        if step_idx > int(spec.step_end):
             return False
 
     lo_t, hi_t = sorted([int(spec.t_start), int(spec.t_end)])
@@ -120,14 +140,18 @@ def build_feature_intervention_hook(
     构建可注册到 block 的前向 hook。
 
     干预规则：
-    - injection: x <- x + scale * d_i
-    - ablation:  x <- x - c_i * d_i
+    - injection: x <- x + scale * (c_i * d_i)
+    - ablation:  x <- x - scale * (c_i * d_i)
+
+    其中 c_i 来自当前 step、当前 token 上对 x 的 SAE 编码 `z = sae.encode(x)`。
+    这样 injection/ablation 是严格对称的（只差一个符号），更像“沿特征方向加速/减速”。
     """
     mode = spec.mode.lower()
     if mode not in {"injection", "ablation"}:
         raise ValueError(f"不支持的干预模式: {spec.mode}")
 
     state = {"step": 0}
+    feature_ids, feature_scales = _resolve_feature_list(spec)
 
     def hook(module, input, output):
         tensor_out, is_tuple = _extract_tensor(output)
@@ -156,16 +180,29 @@ def build_feature_intervention_hook(
         p = next(sae.parameters())
         flat = flat.to(device=p.device, dtype=p.dtype)
         z = sae.encode(flat)
-        fid = int(spec.feature_id)
-        if fid < 0 or fid >= int(z.shape[1]):
+        n_feat = int(z.shape[1])
+        ids = [fid for fid in feature_ids if 0 <= int(fid) < n_feat]
+        if not ids:
             return output
 
-        direction = sae.decoder.weight[:, fid].to(device=flat.device, dtype=flat.dtype)  # [d_model]
+        # 对齐 scales（保持与 ids 一一对应）
+        id_to_scale = {int(fid): float(s) for fid, s in zip(feature_ids, feature_scales)}
+        scales = torch.tensor([id_to_scale[int(fid)] for fid in ids], device=flat.device, dtype=flat.dtype)  # [k]
+
+        # 取 decoder 方向矩阵：dirs shape [d_model, k]
+        dirs = sae.decoder.weight[:, ids].to(device=flat.device, dtype=flat.dtype)
+
+        g = float(spec.scale)  # 全局强度
+        # 对每个 token 取出选中 feature 的系数，再重构出对应分量：
+        # recon = sum_j (c_j * scale_j * d_j)
+        coeff = z[:, ids]  # [tokens, k]
+        weighted = coeff * scales.unsqueeze(0)  # [tokens, k]
+        recon = weighted @ dirs.t()  # [tokens, d_model]
+
         if mode == "injection":
-            flat_new = flat + float(spec.scale) * direction.unsqueeze(0)
+            flat_new = flat + g * recon
         else:
-            coeff = z[:, fid : fid + 1]
-            flat_new = flat - coeff * direction.unsqueeze(0)
+            flat_new = flat - g * recon
 
         selected_new = _unflatten_spatial(flat_new.to(dtype=selected.dtype, device=selected.device), meta)
         out[sl] = selected_new

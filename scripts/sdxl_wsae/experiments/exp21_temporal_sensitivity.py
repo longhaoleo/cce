@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from ..configs import CausalInterventionConfig, RunConfig, SAEConfig
 from ..utils import ensure_dir
-from .exp04_causal_intervention import run_exp04_causal_intervention
+from .exp54_causal_intervention import run_exp54_causal_intervention
 
 
 @dataclass
@@ -37,14 +37,12 @@ def run_exp21_temporal_sensitivity(
     early_cfg.mode = "injection"
     early_cfg.t_start = int(tw_cfg.early_start)
     early_cfg.t_end = int(tw_cfg.early_end)
-    early_cfg.compare_baseline = True
-    run_exp04_causal_intervention(model_cfg, sae_cfg, run_cfg, early_cfg, os.path.join(root, "early_injection"))
+    run_exp54_causal_intervention(model_cfg, sae_cfg, run_cfg, early_cfg, os.path.join(root, "early_injection"))
 
     late_cfg = CausalInterventionConfig(**vars(int_cfg))
     late_cfg.mode = "injection"
     late_cfg.t_start = int(tw_cfg.late_start)
     late_cfg.t_end = int(tw_cfg.late_end)
-    late_cfg.compare_baseline = True
-    run_exp04_causal_intervention(model_cfg, sae_cfg, run_cfg, late_cfg, os.path.join(root, "late_injection"))
+    run_exp54_causal_intervention(model_cfg, sae_cfg, run_cfg, late_cfg, os.path.join(root, "late_injection"))
 
     print(f"实验 2.1 完成，输出目录: {root}")

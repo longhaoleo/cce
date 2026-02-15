@@ -14,11 +14,11 @@
   - `exp52_feature_dynamics_waterfall.py`: 特征动力学瀑布图 Money Plot（实验 52）。
   - `exp53_concept_locator_taris.py`: 概念定位（TARIS 时域平均相对重要性，实验 53）。
   - `shared_prepare.py`: 实验共享的“采样+缓存+delta 提取”模块。
-  - `exp04_causal_intervention.py`: 单特征因果注入/擦除。
-  - `exp05_structure_aspect.py`: 结构与画幅控制（复用 exp04）。
-  - `exp06_dual_encoder.py`: 双编码器解耦（复用 exp04）。
-  - `exp07_clip_alignment.py`: CLIP 定量评估（复用 exp04 结果）。
-  - `exp21_temporal_sensitivity.py`: 早期/晚期注入对比。
+  - `exp54_causal_intervention.py`: 单窗口因果注入/擦除（供 exp05/06/07 复用）。
+  - `exp05_structure_aspect.py`: 结构与画幅控制（复用 exp54_causal_intervention）。
+  - `exp06_dual_encoder.py`: 双编码器解耦（复用 exp54_causal_intervention）。
+  - `exp07_clip_alignment.py`: CLIP 定量评估（复用 exp54_causal_intervention 的输出）。
+  - `exp54_intervention_suite.py`: 统一干预入口（baseline + main + early/late）。
   - `registry.py`: 实验注册和分发。
 
 - `scripts/sdxl_wsae/cli.py`
@@ -52,25 +52,25 @@ python scripts/vslz_wsae_res_sdxl.py \
   --seed 42
 ```
 
-### 实验 4：单特征注入
+### 实验 54：单窗口注入（原 exp04 的统一入口）
 
 ```bash
 python scripts/vslz_wsae_res_sdxl.py \
-  --experiment exp04 \
+  --experiment exp54 \
   --int_block unet.mid_block.attentions.0 \
-  --int_feature_id 123 \
+  --int_feature_ids 123 \
   --int_mode injection \
   --int_scale 1.5 \
   --int_t_start 600 \
   --int_t_end 200
 ```
 
-### 实验 2.1：早晚注入对比
+### 实验 54：早晚注入对比（蝴蝶效应）
 
 ```bash
 python scripts/vslz_wsae_res_sdxl.py \
-  --experiment exp21 \
-  --int_feature_id 123 \
+  --experiment exp54 \
+  --int_feature_ids 123 \
   --early_start 1000 --early_end 800 \
   --late_start 200 --late_end 0
 ```
@@ -80,7 +80,7 @@ python scripts/vslz_wsae_res_sdxl.py \
 ```bash
 python scripts/vslz_wsae_res_sdxl.py \
   --experiment exp07 \
-  --int_feature_id 123 \
+  --int_feature_ids 123 \
   --clip_target_text red \
   --clip_preserve_text car
 ```

@@ -12,7 +12,7 @@ from PIL import Image
 
 from ..configs import CausalInterventionConfig, RunConfig, SAEConfig
 from ..utils import ensure_dir
-from .exp04_causal_intervention import run_exp04_causal_intervention
+from .exp54_causal_intervention import run_exp54_causal_intervention
 
 
 @dataclass
@@ -119,7 +119,7 @@ def run_exp07_clip_alignment(
     subdir = os.path.join(output_dir, "exp07_clip_alignment")
     ensure_dir(subdir)
 
-    run_exp04_causal_intervention(model_cfg, sae_cfg, run_cfg, int_cfg, subdir)
+    run_exp54_causal_intervention(model_cfg, sae_cfg, run_cfg, int_cfg, subdir)
 
     baseline_path = os.path.join(subdir, "intervention_baseline.png")
     steered_path = os.path.join(subdir, "intervention_steered.png")
