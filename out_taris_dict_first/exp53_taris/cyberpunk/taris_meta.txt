@@ -1,0 +1,9 @@
+block=unet.mid_block.attentions.0
+pos_prompts=['a cyberpunk city street at night', 'a woman with neon lights, cyberpunk style', 'a futuristic car in a cyberpunk setting', 'a robot in a neon-lit alleyway']
+neg_prompts=['a normal city street at day', 'a woman in natural lighting', 'a regular car on a normal street', 'a person in a dark brick alleyway']
+t_start=800
+t_end=200
+num_t_samples=10
+delta=1e-06
+selected_step_indices=[5, 6, 8, 10, 12, 14, 16, 18, 20, 22]
+selected_timesteps=[793, 760, 694, 628, 562, 496, 430, 364, 298, 232]

@@ -43,7 +43,7 @@ def parse_args() -> argparse.Namespace:
     g_main.add_argument(
         "--experiment",
         type=str,
-        default="exp52",
+        default="exp54",
         choices=list(SUPPORTED_EXPERIMENTS.keys()),
         help="实验编号",
     )
@@ -53,7 +53,9 @@ def parse_args() -> argparse.Namespace:
     g_model.add_argument("--device", type=str, default="cuda", help="cpu 或 cuda")
     g_model.add_argument("--dtype", type=str, default="fp16", help="fp16/bf16/fp32（cpu+fp16 会自动回退）")
 
-    g_main.add_argument("--prompt", type=str, default="a child hold kitchen knife on the table, scary lighting.")
+    # g_main.add_argument("--prompt", type=str, default="a child hold kitchen knife on the table, scary lighting.")
+    # g_main.add_argument("--prompt", type=str, default="a empty street, sunny day.")
+    g_main.add_argument("--prompt", type=str, default="a car in the street, sunny day.")
     g_main.add_argument("--steps", type=int, default=30)
     g_main.add_argument("--guidance_scale", type=float, default=8.0)
     g_main.add_argument("--seed", type=int, default=42)
@@ -100,19 +102,21 @@ def parse_args() -> argparse.Namespace:
         "--int_feature_ids",
         nargs="+",
         type=int,
-        default=[0],
+        default=[2758, 4052, 919, 473, 366, 878, 2229, 2215, 2932, 2091],
         help="干预特征 id 列表（单特征就传 1 个）",
     )
     g_int.add_argument(
         "--int_feature_scales",
         nargs="+",
         type=float,
-        default=[],
+        default=[0.006224330514669418, 0.005031862761825323, 0.00404663709923625, 0.00349993584677577, 
+                 0.002999882912263274, 0.002881488762795925, 0.002654273994266987, 0.0024882021825760603, 
+                 0.0024667761754244566, 0.0023173089139163494],
         help="每个特征的相对系数（可选；可只给 1 个值用于广播；最终强度=int_scale*feature_scale）",
     )
 
-    g_int.add_argument("--int_mode", type=str, default="injection", choices=["injection", "ablation"], help="injection 或 ablation")
-    g_int.add_argument("--int_scale", type=float, default=1.0, help="全局强度系数（公用 scale）")
+    g_int.add_argument("--int_mode", type=str, default="ablation", choices=["injection", "ablation"], help="injection 或 ablation")
+    g_int.add_argument("--int_scale", type=float, default=10000, help="全局强度系数（公用 scale）")
     g_int.add_argument(
         "--int_spatial_mask",
         type=str,
@@ -126,7 +130,7 @@ def parse_args() -> argparse.Namespace:
         default=0.25,
         help="gaussian_center 的 sigma 相对尺度（sigma_px = sigma * min(H,W)）",
     )
-    g_int.add_argument("--int_t_start", type=int, default=600, help="main 窗口：t_start")
+    g_int.add_argument("--int_t_start", type=int, default=800, help="main 窗口：t_start")
     g_int.add_argument("--int_t_end", type=int, default=200, help="main 窗口：t_end")
     g_int.add_argument("--int_step_start", type=int, default=-1, help=">=0 时启用 step 下界（优先生效）")
     g_int.add_argument("--int_step_end", type=int, default=-1, help=">=0 时启用 step 上界（优先生效）")
