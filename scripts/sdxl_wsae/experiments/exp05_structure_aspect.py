@@ -6,7 +6,7 @@ import os
 
 from ..configs import CausalInterventionConfig, RunConfig, SAEConfig
 from ..utils import ensure_dir
-from .exp54_causal_intervention import run_exp54_causal_intervention
+from .exp54_intervention_suite import run_exp54_causal_intervention
 
 
 def run_exp05_structure_aspect(

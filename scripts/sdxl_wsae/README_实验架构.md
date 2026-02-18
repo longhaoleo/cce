@@ -14,11 +14,10 @@
   - `exp52_feature_dynamics_waterfall.py`: 特征动力学瀑布图 Money Plot（实验 52）。
   - `exp53_concept_locator_taris.py`: 概念定位（TARIS 时域平均相对重要性，实验 53）。
   - `shared_prepare.py`: 实验共享的“采样+缓存+delta 提取”模块。
-  - `exp54_causal_intervention.py`: 单窗口因果注入/擦除（供 exp05/06/07 复用）。
-  - `exp05_structure_aspect.py`: 结构与画幅控制（复用 exp54_causal_intervention）。
-  - `exp06_dual_encoder.py`: 双编码器解耦（复用 exp54_causal_intervention）。
-  - `exp07_clip_alignment.py`: CLIP 定量评估（复用 exp54_causal_intervention 的输出）。
-  - `exp54_intervention_suite.py`: 统一干预入口（baseline + main + early/late）。
+  - `exp54_intervention_suite.py`: 干预统一入口（baseline + main + early/late），并包含单窗口干预函数供复用。
+  - `exp05_structure_aspect.py`: 结构与画幅控制（复用 exp54_intervention_suite.py 的单窗口干预）。
+  - `exp06_dual_encoder.py`: 双编码器解耦（复用 exp54_intervention_suite.py 的单窗口干预）。
+  - `exp07_clip_alignment.py`: CLIP 定量评估（复用 exp54_intervention_suite.py 的单窗口干预输出）。
   - `registry.py`: 实验注册和分发。
 
 - `scripts/sdxl_wsae/cli.py`
@@ -47,6 +46,19 @@ python scripts/vslz_wsae_res_sdxl.py \
 python scripts/vslz_wsae_res_sdxl.py \
   --experiment exp51 \
   --sae_top_k 10 \
+  --delta_stride 2 \
+  --steps 50 \
+  --seed 42
+```
+
+### 实验 51：可视化“指定特征集合”（来自 exp53 的 csv）
+
+```bash
+python scripts/vslz_wsae_res_sdxl.py \
+  --experiment exp51 \
+  --blocks unet.mid_block.attentions.0 \
+  --exp51_feature_csv out_concept_dict/red/top_positive_features.csv \
+  --exp51_feature_k 20 \
   --delta_stride 2 \
   --steps 50 \
   --seed 42
@@ -91,9 +103,19 @@ python scripts/vslz_wsae_res_sdxl.py \
 python scripts/vslz_wsae_res_sdxl.py \
   --experiment exp53 \
   --loc_block unet.mid_block.attentions.0 \
-  --pos_prompts "red car" "red apple" \
-  --neg_prompts "blue car" "blue apple" \
+  --concept_name red_vs_blue \
   --taris_t_start 800 --taris_t_end 200 \
   --taris_num_steps 10 \
   --taris_top_k 20
 ```
+
+exp53 的 prompts 从本地 json 读取：`target_concept_dict/{concept_name}.json`，示例：
+
+```json
+{
+  "pos_prompts": ["a red car", "a red apple"],
+  "neg_prompts": ["a blue car", "a blue apple"]
+}
+```
+
+输出固定到：`out_concept_dict/{concept_name}/`

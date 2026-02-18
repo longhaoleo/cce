@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, List, Optional, Sequence, Tuple
-
+from typing import Any, List, Optional, Tuple
 import torch
 
 
@@ -19,9 +18,83 @@ class InterventionSpec:
     scale: float = 1.0
     t_start: int = 600
     t_end: int = 200
+    # 空间约束：默认不启用，避免改变老实验行为
+    spatial_mask: str = "none"  # none | gaussian_center
+    mask_sigma: float = 0.25  # sigma 的相对尺度（sigma_px = sigma * min(H,W)）
     step_start: Optional[int] = None
     step_end: Optional[int] = None
     apply_only_conditional: bool = True
+
+
+def _gaussian_center_mask(
+    *,
+    h: int,
+    w: int,
+    sigma_frac: float,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    """生成以中心为峰值的 2D 高斯 mask（最大值归一化到 1）。
+
+    返回 shape: [h*w]（按 row-major 展平）。
+    """
+    hh, ww = int(h), int(w)
+    if hh <= 0 or ww <= 0:
+        return torch.ones(0, device=device, dtype=dtype)
+    s = float(sigma_frac)
+    if s <= 0:
+        return torch.ones(hh * ww, device=device, dtype=dtype)
+    sigma_px = s * float(min(hh, ww))
+    if sigma_px <= 1e-6:
+        return torch.ones(hh * ww, device=device, dtype=dtype)
+
+    ys = torch.arange(hh, device=device, dtype=dtype)
+    xs = torch.arange(ww, device=device, dtype=dtype)
+    yy, xx = torch.meshgrid(ys, xs, indexing="ij")
+    cy = (float(hh) - 1.0) / 2.0
+    cx = (float(ww) - 1.0) / 2.0
+    dy2 = (yy - cy) ** 2
+    dx2 = (xx - cx) ** 2
+    m = torch.exp(-(dx2 + dy2) / (2.0 * (sigma_px**2)))
+    m = m / (m.max() + 1e-12)
+    return m.reshape(hh * ww)
+
+
+def _maybe_apply_spatial_mask(
+    *,
+    recon: torch.Tensor,  # [tokens, d_model]
+    meta: Tuple[str, int, int, int],
+    spec: InterventionSpec,
+) -> torch.Tensor:
+    """对 token 级 recon 乘上空间 mask（如果启用）。"""
+    if str(spec.spatial_mask).lower() in ("", "none", "off", "false", "0"):
+        return recon
+    if str(spec.spatial_mask).lower() not in ("gaussian_center", "gaussian"):
+        return recon
+
+    kind, a, b, c = meta
+    device = recon.device
+    dtype = recon.dtype
+    if kind == "bchw":
+        bsz, h, w = int(a), int(b), int(c)
+        m_hw = _gaussian_center_mask(h=h, w=w, sigma_frac=float(spec.mask_sigma), device=device, dtype=dtype)  # [h*w]
+        if int(m_hw.numel()) != int(h * w) or int(recon.shape[0]) != int(bsz * h * w):
+            return recon
+        m = m_hw.repeat(bsz).unsqueeze(1)  # [tokens, 1]
+        return recon * m
+
+    if kind == "bnc":
+        bsz, n = int(a), int(b)
+        # 尝试把 token 还原成方形网格；不满足则不加 mask（避免误用）
+        side = int(round(float(n) ** 0.5))
+        if side > 0 and side * side == n:
+            m_hw = _gaussian_center_mask(h=side, w=side, sigma_frac=float(spec.mask_sigma), device=device, dtype=dtype)
+            m = m_hw.repeat(bsz).unsqueeze(1)  # [tokens, 1]
+            if int(m.shape[0]) == int(recon.shape[0]):
+                return recon * m
+        return recon
+
+    return recon
 
 
 def _resolve_feature_list(spec: InterventionSpec) -> Tuple[List[int], List[float]]:
@@ -198,11 +271,14 @@ def build_feature_intervention_hook(
         coeff = z[:, ids]  # [tokens, k]
         weighted = coeff * scales.unsqueeze(0)  # [tokens, k]
         recon = weighted @ dirs.t()  # [tokens, d_model]
+        recon = _maybe_apply_spatial_mask(recon=recon, meta=meta, spec=spec)
 
         if mode == "injection":
             flat_new = flat + g * recon
         else:
             flat_new = flat - g * recon
+
+        print(f"original flat norm: {flat.norm().item():.4f}, recon norm: {recon.norm().item():.4f}, new flat norm: {flat_new.norm().item():.4f}")
 
         selected_new = _unflatten_spatial(flat_new.to(dtype=selected.dtype, device=selected.device), meta)
         out[sl] = selected_new

@@ -51,6 +51,13 @@ class VizConfig:
     sae_top_k: int = 10
     delta_stride: int = 1
     overlay_alpha: float = 0.75
+    # exp51：如果你想“可视化指定特征集合”，可以从 exp53 的 csv 读取 feature_id 列表。
+    # - feature_csv: 指向 `top_positive_features.csv`（或同格式的 csv）
+    # - feature_k:   从 csv 里取前 K 个（<=0 表示全取）
+    # 两者留空则走默认的“每步动态 top-k”逻辑。
+    exp51_feature_csv: str = ""
+    exp51_feature_k: int = 0
+    exp51_feature_coeff_scale: float = 1.0
     waterfall_max_features: int = 1024
     waterfall_norm: str = "row"
     waterfall_cmap: str = "magma"
@@ -65,10 +72,16 @@ class CausalInterventionConfig:
     feature_scales: Tuple[float, ...] = ()
     mode: str = "injection"  # injection | ablation
     scale: float = 1.0  # 全局强度系数（会乘到每个特征的 feature_scales 上）
+    # 空间约束（可选）：打破“全图对称性”
+    # - none: 不加 mask
+    # - gaussian_center: 以中心为峰值的 2D 高斯 mask，边缘权重更小
+    spatial_mask: str = "none"
+    mask_sigma: float = 0.25  # sigma 的相对尺度（乘 min(H,W) 得到像素尺度）
     t_start: int = 600
     t_end: int = 200
     step_start: Optional[int] = None
     step_end: Optional[int] = None
+    compare_baseline: bool = True  # 是否输出 baseline（不干预）对照
 
 
 @dataclass
@@ -77,8 +90,6 @@ class ConceptLocateConfig:
 
     block: str = "unet.mid_block.attentions.0"
     concept_name: str = ""
-    pos_prompts: Tuple[str, ...] = ()
-    neg_prompts: Tuple[str, ...] = ()
     t_start: int = 800
     t_end: int = 200
     num_t_samples: int = 10

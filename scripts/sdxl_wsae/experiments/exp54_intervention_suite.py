@@ -1,12 +1,6 @@
 """
 实验 54：统一干预入口（时间窗差异对比 / “蝴蝶效应”）。
 
-动机
-----
-你现在仓库里有一组“本质相同、主要差别是注入时间窗”的实验：
-- exp04：单窗口干预（baseline vs steered），支持 injection / ablation
-- exp21：同一特征在 early/late 两个窗口 injection 对比
-- exp54：蝴蝶效应（early vs late injection）
 
 这些实验的核心都是：
 1) 选一个 block + 一组 SAE feature_ids（单特征就是长度=1）
@@ -17,6 +11,10 @@
 因此这里把它们合并成一个入口 exp54：
 - main 干预：使用 int_cfg.mode + int_cfg.t_start/t_end（等价于原 exp04）
 - early/late 干预：仅当 main 的 mode 是 injection 时运行，窗口来自 tw_cfg
+
+本文件同时提供一个“单窗口 baseline vs steered”的子实验函数：
+- `run_exp54_causal_intervention(...)`
+它会被 exp05/exp06/exp07/exp21 复用（避免重复代码）。
 
 输入参数来源（均已在 CLI 里存在）：
 - int_cfg: 通过 --int_block/--int_feature_ids/--int_mode/--int_scale/--int_t_start/--int_t_end/... 指定
@@ -113,6 +111,181 @@ def _feature_curve_from_cache(
     return steps, ts, vals
 
 
+def run_exp54_causal_intervention(
+    model_cfg,
+    sae_cfg: SAEConfig,
+    run_cfg: RunConfig,
+    int_cfg: CausalInterventionConfig,
+    output_dir: str,
+) -> None:
+    """exp54 的“单窗口因果干预”子实验（供 exp05/06/07/21 复用）。
+
+    这就是历史上的 exp04：baseline vs steered。
+
+    输出文件（都写到 output_dir 下）：
+    - intervention_baseline.png（可选，由 int_cfg.compare_baseline 控制）
+    - intervention_steered.png
+    - intervention_compare.png（可选：有 baseline 才会输出）
+    - intervention_feature_curve.csv
+    - intervention_curve_{block}_f{...}.png
+    """
+    ensure_dir(output_dir)
+    block = str(int_cfg.block)
+
+    session = SDXLExperimentSession(model_cfg, sae_cfg)
+    session.load_saes([block])
+    sae = session.get_sae(block)
+
+    # 统一解析“单特征/多特征”参数
+    feature_ids = [int(x) for x in int_cfg.feature_ids]
+    if not feature_ids:
+        raise ValueError("feature_ids 不能为空。")
+    if int_cfg.feature_scales:
+        if len(int_cfg.feature_scales) != len(feature_ids):
+            raise ValueError("int_feature_scales 长度必须与 int_feature_ids 相同。")
+        feature_scales = [float(x) for x in int_cfg.feature_scales]
+    else:
+        feature_scales = [1.0 for _ in feature_ids]
+
+    baseline_img = None
+    baseline_curve = None
+    if bool(getattr(int_cfg, "compare_baseline", True)):
+        out_base, cache_base = session.run_with_cache(
+            run_cfg,
+            positions_to_cache=[block],
+            save_input=True,
+            save_output=True,
+            output_type="pil",
+        )
+        baseline_img = extract_first_image(out_base)
+        if baseline_img is not None:
+            baseline_path = os.path.join(output_dir, "intervention_baseline.png")
+            baseline_img.save(baseline_path)
+            print(f"已保存 baseline: {baseline_path}")
+
+        timesteps = session.scheduler_timesteps(session.pipe)
+        baseline_curve = _feature_curve_from_cache(
+            cache=cache_base,
+            timesteps=timesteps,
+            block=block,
+            sae=sae,
+            feature_ids=feature_ids,
+            feature_scales=feature_scales,
+        )
+
+    spec = InterventionSpec(
+        block=block,
+        feature_ids=tuple(feature_ids),
+        feature_scales=tuple(feature_scales),
+        mode=str(int_cfg.mode),
+        scale=float(int_cfg.scale),
+        spatial_mask=str(getattr(int_cfg, "spatial_mask", "none")),
+        mask_sigma=float(getattr(int_cfg, "mask_sigma", 0.25)),
+        t_start=int(int_cfg.t_start),
+        t_end=int(int_cfg.t_end),
+        step_start=int_cfg.step_start,
+        step_end=int_cfg.step_end,
+        apply_only_conditional=True,
+    )
+    hook = build_feature_intervention_hook(pipe=session.pipe, sae=sae, spec=spec)
+
+    out_steer, cache_steer = session.run_with_hooks_and_cache(
+        run_cfg,
+        position_hook_dict={block: hook},
+        positions_to_cache=[block],
+        save_input=True,
+        save_output=True,
+        output_type="pil",
+    )
+    steered_img = extract_first_image(out_steer)
+    if steered_img is not None:
+        steered_path = os.path.join(output_dir, "intervention_steered.png")
+        steered_img.save(steered_path)
+        print(f"已保存 steered: {steered_path}")
+
+    timesteps = session.scheduler_timesteps(session.pipe)
+    steps_s, ts_s, vals_s = _feature_curve_from_cache(
+        cache=cache_steer,
+        timesteps=timesteps,
+        block=block,
+        sae=sae,
+        feature_ids=feature_ids,
+        feature_scales=feature_scales,
+    )
+
+    if baseline_img is not None and steered_img is not None:
+        compare = _concat_images_h([baseline_img, steered_img])
+        compare_path = os.path.join(output_dir, "intervention_compare.png")
+        compare.save(compare_path)
+        print(f"已保存对比图: {compare_path}")
+
+    csv_path = os.path.join(output_dir, "intervention_feature_curve.csv")
+    with open(csv_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=[
+                "step_idx",
+                "timestep",
+                "feature_ids",
+                "feature_scales",
+                "baseline_value",
+                "steered_value",
+                "delta",
+            ],
+        )
+        writer.writeheader()
+        if baseline_curve is None:
+            for i in range(len(steps_s)):
+                writer.writerow(
+                    {
+                        "step_idx": steps_s[i],
+                        "timestep": ts_s[i],
+                        "feature_ids": " ".join(str(x) for x in feature_ids),
+                        "feature_scales": " ".join(str(x) for x in feature_scales),
+                        "baseline_value": "",
+                        "steered_value": vals_s[i],
+                        "delta": "",
+                    }
+                )
+        else:
+            steps_b, ts_b, vals_b = baseline_curve
+            n = min(len(vals_b), len(vals_s))
+            for i in range(n):
+                writer.writerow(
+                    {
+                        "step_idx": steps_s[i],
+                        "timestep": ts_s[i],
+                        "feature_ids": " ".join(str(x) for x in feature_ids),
+                        "feature_scales": " ".join(str(x) for x in feature_scales),
+                        "baseline_value": vals_b[i],
+                        "steered_value": vals_s[i],
+                        "delta": vals_s[i] - vals_b[i],
+                    }
+                )
+    print(f"已保存曲线 CSV: {csv_path}")
+
+    fid_tag = f"f{feature_ids[0]}_k{len(feature_ids)}" if len(feature_ids) > 1 else f"f{feature_ids[0]}"
+    curve_path = os.path.join(output_dir, f"intervention_curve_{safe_name(block)}_{fid_tag}.png")
+    plt.figure(figsize=(10, 4))
+    if baseline_curve is not None:
+        _, _, vals_b = baseline_curve
+        plt.plot(range(len(vals_b)), vals_b, label="baseline", marker="o")
+    plt.plot(range(len(vals_s)), vals_s, label="steered", marker="s")
+    plt.xlabel("step_idx")
+    plt.ylabel("feature activation")
+    plt.title(
+        f"Intervention Curve | block={block}\n"
+        f"mode={int_cfg.mode} features={feature_ids} scales={feature_scales} global_scale={float(int_cfg.scale)} "
+        f"mask={str(getattr(int_cfg, 'spatial_mask', 'none'))} sigma={float(getattr(int_cfg, 'mask_sigma', 0.25))}"
+    )
+    plt.grid(alpha=0.3)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(curve_path, dpi=160)
+    plt.close()
+    print(f"已保存曲线图: {curve_path}")
+
+
 def run_exp54_intervention_suite(
     model_cfg,
     sae_cfg: SAEConfig,
@@ -142,31 +315,32 @@ def run_exp54_intervention_suite(
     else:
         feature_scales = [1.0 for _ in feature_ids]
 
-    # 1) Baseline：不加 hook，正常采样并缓存该 block 的输入/输出
+    # 1) Baseline：不加 hook，正常采样并缓存该 block 的输入/输出（可选）
     baseline_img = None
     baseline_curve = None
-    out_base, cache_base = session.run_with_cache(
-        run_cfg,
-        positions_to_cache=[block],
-        save_input=True,
-        save_output=True,
-        output_type="pil",
-    )
-    baseline_img = extract_first_image(out_base)
-    if baseline_img is not None:
-        pth = os.path.join(root, "baseline.png")
-        baseline_img.save(pth)
-        print(f"已保存 baseline: {pth}")
+    if bool(getattr(int_cfg, "compare_baseline", True)):
+        out_base, cache_base = session.run_with_cache(
+            run_cfg,
+            positions_to_cache=[block],
+            save_input=True,
+            save_output=True,
+            output_type="pil",
+        )
+        baseline_img = extract_first_image(out_base)
+        if baseline_img is not None:
+            pth = os.path.join(root, "baseline.png")
+            baseline_img.save(pth)
+            print(f"已保存 baseline: {pth}")
 
-    timesteps = session.scheduler_timesteps(session.pipe)
-    baseline_curve = _feature_curve_from_cache(
-        cache=cache_base,
-        timesteps=timesteps,
-        block=block,
-        sae=sae,
-        feature_ids=feature_ids,
-        feature_scales=feature_scales,
-    )
+        timesteps = session.scheduler_timesteps(session.pipe)
+        baseline_curve = _feature_curve_from_cache(
+            cache=cache_base,
+            timesteps=timesteps,
+            block=block,
+            sae=sae,
+            feature_ids=feature_ids,
+            feature_scales=feature_scales,
+        )
 
     # 2) 通用：跑一次“带 hook 的推理”，并返回生成图 + 曲线
     def _run_one(*, name: str, spec: InterventionSpec):
@@ -204,6 +378,8 @@ def run_exp54_intervention_suite(
         feature_scales=tuple(feature_scales),
         mode=main_mode,  # injection | ablation
         scale=float(int_cfg.scale),
+        spatial_mask=str(getattr(int_cfg, "spatial_mask", "none")),
+        mask_sigma=float(getattr(int_cfg, "mask_sigma", 0.25)),
         t_start=int(int_cfg.t_start),
         t_end=int(int_cfg.t_end),
         step_start=int_cfg.step_start,
@@ -222,6 +398,8 @@ def run_exp54_intervention_suite(
             feature_scales=tuple(feature_scales),
             mode="injection",
             scale=float(int_cfg.scale),
+            spatial_mask=str(getattr(int_cfg, "spatial_mask", "none")),
+            mask_sigma=float(getattr(int_cfg, "mask_sigma", 0.25)),
             t_start=int(tw_cfg.early_start),
             t_end=int(tw_cfg.early_end),
             step_start=int_cfg.step_start,
@@ -234,6 +412,8 @@ def run_exp54_intervention_suite(
             feature_scales=tuple(feature_scales),
             mode="injection",
             scale=float(int_cfg.scale),
+            spatial_mask=str(getattr(int_cfg, "spatial_mask", "none")),
+            mask_sigma=float(getattr(int_cfg, "mask_sigma", 0.25)),
             t_start=int(tw_cfg.late_start),
             t_end=int(tw_cfg.late_end),
             step_start=int_cfg.step_start,

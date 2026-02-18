@@ -5,11 +5,16 @@
 你只需要改：
 - CONCEPTS：每个概念一组正负 prompts
 - 下面 main() 里的默认参数（或用命令行覆盖）
+
+当前约定（与 exp53 保持一致）：
+- prompts 输入：写入并读取 `target_concept_dict/{concept_name}.json`
+- 输出目录：`out_concept_dict/{concept_name}/`
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from pathlib import Path
@@ -159,7 +164,6 @@ CONCEPTS: dict[str, dict[str, list[str]]] = {
 
 def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description="Run exp53 (TARIS) for concepts in a dict")
-    ap.add_argument("--output_root", type=str, default="./out_taris_dict")
     ap.add_argument("--sae_root", type=str, default="~/autodl-tmp/sdxl-saes")
     ap.add_argument("--model_id", type=str, default="~/autodl-tmp/models/sd-xl-base-1.0-fp16-only")
     ap.add_argument("--device", type=str, default="cuda")
@@ -184,13 +188,43 @@ def parse_args() -> argparse.Namespace:
         default=[],
         help="只跑这些概念名（空表示全跑），例如 --only red_vs_blue glasses",
     )
+    ap.add_argument(
+        "--write_json_only",
+        action="store_true",
+        help="只把 CONCEPTS 写入 target_concept_dict/*.json，然后退出（不加载模型、不跑 exp53）。",
+    )
     return ap.parse_args()
+
+
+def _write_concept_json(*, concept_name: str, pos: list[str], neg: list[str]) -> Path:
+    """把内置 CONCEPTS 写成 exp53 期望的 json 文件。"""
+    os.makedirs("target_concept_dict", exist_ok=True)
+    path = Path("target_concept_dict") / f"{concept_name}.json"
+    payload = {"pos_prompts": list(pos), "neg_prompts": list(neg)}
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    return path
 
 
 def main() -> None:
     args = parse_args()
-    output_root = os.path.expanduser(args.output_root)
-    os.makedirs(output_root, exist_ok=True)
+
+    only = set(map(str, args.only)) if args.only else None
+    # 先把 json 统一写出来（你后续加 prompts 也只需要改这个 dict）
+    for concept_name, spec in CONCEPTS.items():
+        if only is not None and concept_name not in only:
+            continue
+        pos = list(spec.get("pos", []))
+        neg = list(spec.get("neg", []))
+        if not pos or not neg:
+            print(f"[skip] {concept_name}: pos/neg 为空")
+            continue
+
+        pth = _write_concept_json(concept_name=str(concept_name), pos=pos, neg=neg)
+        print(f"[concept] 写入: {pth}")
+
+    if bool(args.write_json_only):
+        return
 
     model_cfg = ModelConfig(
         model_id=args.model_id,
@@ -214,21 +248,13 @@ def main() -> None:
     # 复用同一个 session：避免每个概念重复加载模型和 SAE
     session = SDXLExperimentSession(model_cfg, sae_cfg)
 
-    only = set(map(str, args.only)) if args.only else None
-    for concept_name, spec in CONCEPTS.items():
+    for concept_name, _spec in CONCEPTS.items():
         if only is not None and concept_name not in only:
-            continue
-        pos = list(spec.get("pos", []))
-        neg = list(spec.get("neg", []))
-        if not pos or not neg:
-            print(f"[skip] {concept_name}: pos/neg 为空")
             continue
 
         concept_cfg = ConceptLocateConfig(
             block=str(args.loc_block),
             concept_name=str(concept_name),
-            pos_prompts=tuple(pos),
-            neg_prompts=tuple(neg),
             t_start=int(args.taris_t_start),
             t_end=int(args.taris_t_end),
             num_t_samples=int(args.taris_num_steps),
@@ -241,7 +267,7 @@ def main() -> None:
             sae_cfg,
             run_cfg,
             concept_cfg,
-            output_root,
+            output_dir=".",  # exp53 当前固定输出到 out_concept_dict/{concept_name}/
             session=session,
         )
 

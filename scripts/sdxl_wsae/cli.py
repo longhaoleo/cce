@@ -73,6 +73,24 @@ def parse_args() -> argparse.Namespace:
     g_viz.add_argument("--sae_top_k", type=int, default=10, help="exp51 用：top-k")
     g_viz.add_argument("--delta_stride", type=int, default=1, help="exp51 用：每隔多少 step 保存一张叠加图")
     g_viz.add_argument("--overlay_alpha", type=float, default=0.75, help="exp51 用：叠加透明度")
+    g_viz.add_argument(
+        "--exp51_feature_csv",
+        type=str,
+        default="",
+        help="exp51 用：指定特征集合的 csv（例如 out_concept_dict/<concept>/top_positive_features.csv；留空则每步动态 top-k）",
+    )
+    g_viz.add_argument(
+        "--exp51_feature_k",
+        type=int,
+        default=0,
+        help="exp51 用：从 csv 里取前 K 个 feature（<=0 表示全取）",
+    )
+    g_viz.add_argument(
+        "--exp51_feature_coeff_scale",
+        type=float,
+        default=1.0,
+        help="exp51 用：固定特征集合模式下，对这些特征的系数 c_i 统一乘一个缩放（默认 1.0）",
+    )
     g_viz.add_argument("--waterfall_max_features", type=int, default=1024, help="exp52 用：最多画多少特征")
     g_viz.add_argument("--waterfall_norm", type=str, default="row", choices=["row", "global", "none"], help="exp52 用：归一化方式")
     g_viz.add_argument("--waterfall_cmap", type=str, default="magma", help="exp52 用：colormap")
@@ -82,21 +100,32 @@ def parse_args() -> argparse.Namespace:
         "--int_feature_ids",
         nargs="+",
         type=int,
-        default=[3611, 4052, 919, 4014, 58, 2091, 2758, 4766, 878, 4213, 1195, 2932],
+        default=[0],
         help="干预特征 id 列表（单特征就传 1 个）",
     )
     g_int.add_argument(
         "--int_feature_scales",
         nargs="+",
         type=float,
-        default=[0.00848736334592104, 0.007790582720190287, 0.007180307060480118, 0.00590311037376523, 
-                0.005390139762312174, 0.005349571816623211, 0.005128177814185619, 0.0046647172421216965, 
-                0.004591265693306923, 0.004241584800183773, 0.00415472686290741, 0.004126726184040308],
+        default=[],
         help="每个特征的相对系数（可选；可只给 1 个值用于广播；最终强度=int_scale*feature_scale）",
     )
 
     g_int.add_argument("--int_mode", type=str, default="injection", choices=["injection", "ablation"], help="injection 或 ablation")
-    g_int.add_argument("--int_scale", type=float, default=100.0, help="全局强度系数（公用 scale）")
+    g_int.add_argument("--int_scale", type=float, default=1.0, help="全局强度系数（公用 scale）")
+    g_int.add_argument(
+        "--int_spatial_mask",
+        type=str,
+        default="none",
+        choices=["none", "gaussian_center"],
+        help="空间 mask（打破全图对称性）：none 或 gaussian_center",
+    )
+    g_int.add_argument(
+        "--int_mask_sigma",
+        type=float,
+        default=0.25,
+        help="gaussian_center 的 sigma 相对尺度（sigma_px = sigma * min(H,W)）",
+    )
     g_int.add_argument("--int_t_start", type=int, default=600, help="main 窗口：t_start")
     g_int.add_argument("--int_t_end", type=int, default=200, help="main 窗口：t_end")
     g_int.add_argument("--int_step_start", type=int, default=-1, help=">=0 时启用 step 下界（优先生效）")
@@ -114,8 +143,8 @@ def parse_args() -> argparse.Namespace:
 
     g_loc.add_argument("--loc_block",type=str,default="unet.mid_block.attentions.0",help="exp53 用：用于定位概念的 SAE block",)
     g_loc.add_argument("--concept_name",type=str,default="",help="exp53 用：概念名（用于组织输出目录，例如 red；留空则不加这一层）",)
-    g_loc.add_argument("--pos_prompts",nargs="+",default=[],help="exp53 用：正样本 prompts（每条 prompt 用引号包起来）",)
-    g_loc.add_argument("--neg_prompts",nargs="+",default=[],help="exp53 用：负样本 prompts（每条 prompt 用引号包起来）")
+    # exp53 改为从 `target_concept_dict/{concept_name}.json` 读取 prompts，
+    # 所以不再从 CLI 接收超长的 pos/neg 列表参数。
     g_loc.add_argument("--taris_t_start", type=int, default=800, help="时间窗口上界（高噪侧）")
     g_loc.add_argument("--taris_t_end", type=int, default=200, help="时间窗口下界（低噪侧）")
     g_loc.add_argument("--taris_num_steps", type=int, default=10, help="窗口内采样步数（<=0 表示全用）")
@@ -149,6 +178,9 @@ def build_configs(args: argparse.Namespace):
         sae_top_k=args.sae_top_k,
         delta_stride=args.delta_stride,
         overlay_alpha=args.overlay_alpha,
+        exp51_feature_csv=str(args.exp51_feature_csv or ""),
+        exp51_feature_k=int(args.exp51_feature_k),
+        exp51_feature_coeff_scale=float(args.exp51_feature_coeff_scale),
         waterfall_max_features=args.waterfall_max_features,
         waterfall_norm=args.waterfall_norm,
         waterfall_cmap=args.waterfall_cmap,
@@ -180,6 +212,8 @@ def build_configs(args: argparse.Namespace):
         feature_scales=tuple(feature_scales),
         mode=args.int_mode,
         scale=float(args.int_scale),
+        spatial_mask=str(args.int_spatial_mask),
+        mask_sigma=float(args.int_mask_sigma),
         t_start=int(args.int_t_start),
         t_end=int(args.int_t_end),
         step_start=step_start,
@@ -201,8 +235,6 @@ def build_configs(args: argparse.Namespace):
     concept_cfg = ConceptLocateConfig(
         block=str(args.loc_block),
         concept_name=str(args.concept_name),
-        pos_prompts=tuple(args.pos_prompts),
-        neg_prompts=tuple(args.neg_prompts),
         t_start=int(args.taris_t_start),
         t_end=int(args.taris_t_end),
         num_t_samples=int(args.taris_num_steps),

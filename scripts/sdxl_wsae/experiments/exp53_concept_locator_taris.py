@@ -18,20 +18,121 @@ GlobalScore(i) = (1/|T|) * sum_{t in T} [ mu_c(i,t)/(E_c(t)+δ) - mu_nc(i,t)/(E_
 """
 
 from __future__ import annotations
-import seaborn as sns
 import csv
+import json
 import os
+from pathlib import Path
 from dataclasses import replace
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, List, Sequence, Tuple, Any
 
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+import seaborn as sns
 
 from ..configs import ConceptLocateConfig, RunConfig, SAEConfig
 from ..core.session import SDXLExperimentSession
 from ..utils import ensure_dir, safe_name
 from .shared_prepare import DeltaExtractor
+
+
+def _load_concept_prompts_from_json(*, concept_name: str) -> Tuple[List[str], List[str], Dict[str, Any]]:
+    """从 `target_concept_dict/{concept_name}.json` 读取正/负 prompts。
+
+    你这边的 json 格式可能会不断演化，所以这里做成“尽量鲁棒”的解析器：
+    - 允许字段名变化：pos/neg/positive/negative/pos_prompts/neg_prompts/...
+    - 允许嵌套结构：{"pos": {"prompts": [...]}}、{"positive": [{"text": "..."}]} 等
+    - 允许单个字符串：{"pos_prompts": "xxx"}（会转成长度 1 的 list）
+
+    约定：
+    - 解析出的 prompts 会做 strip，并过滤空字符串。
+    - 最终必须同时得到非空的 pos_prompts 与 neg_prompts。
+    """
+    name = str(concept_name).strip()
+    if not name:
+        raise ValueError("exp53 需要提供 --concept_name，用它定位 json 文件名。")
+
+    root = Path("target_concept_dict")
+    path = (root / f"{name}.json").resolve()
+    if not path.exists():
+        raise FileNotFoundError(f"未找到概念 json: {path}（请放在 target_concept_dict/ 下，文件名=concept_name.json）")
+
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, dict):
+        raise ValueError(f"概念 json 必须是 dict: {path}")
+
+    def _as_list(x) -> List[str]:
+        if x is None:
+            return []
+        if isinstance(x, str):
+            x = x.strip()
+            return [x] if x else []
+        if isinstance(x, list):
+            out = []
+            for it in x:
+                if it is None:
+                    continue
+                if isinstance(it, str):
+                    s = it.strip()
+                    if s:
+                        out.append(s)
+                    continue
+                if isinstance(it, dict):
+                    # 常见：{"text": "..."} / {"prompt": "..."} / {"caption": "..."}
+                    for key in ("prompt", "text", "caption", "value"):
+                        if key in it:
+                            out.extend(_as_list(it.get(key)))
+                            break
+                    continue
+                s = str(it).strip()
+                if s:
+                    out.append(s)
+            return out
+        if isinstance(x, dict):
+            # 常见：{"prompts": [...]} 或更深层嵌套
+            for key in ("prompts", "prompt", "texts", "text", "captions"):
+                if key in x:
+                    return _as_list(x.get(key))
+            # 不认识的 dict：把所有 value 扫一遍（例如 {"easy":[...], "hard":[...]}）
+            out: List[str] = []
+            for v in x.values():
+                out.extend(_as_list(v))
+            return out
+        raise ValueError(f"prompts 字段必须是 string 或 list: got {type(x)}")
+
+    POS_KEYS = (
+        "pos_prompts",
+        "pos",
+        "positive_prompts",
+        "positive",
+        "concept_prompts",
+        "concept",
+        "target_prompts",
+        "target",
+    )
+    NEG_KEYS = (
+        "neg_prompts",
+        "neg",
+        "negative_prompts",
+        "negative",
+        "non_concept_prompts",
+        "non_concept",
+        "control_prompts",
+        "control",
+        "anti_prompts",
+        "anti",
+    )
+
+    def _pick_first(keys: Tuple[str, ...]) -> Any:
+        for k in keys:
+            if k in data:
+                return data.get(k)
+        return None
+
+    pos = _as_list(_pick_first(POS_KEYS))
+    neg = _as_list(_pick_first(NEG_KEYS))
+    return pos, neg, data
 
 
 @torch.no_grad()
@@ -137,20 +238,26 @@ def run_exp53_concept_locator_taris(
     session: SDXLExperimentSession | None = None,
 ) -> None:
     """运行实验 53：TARIS 概念定位。"""
-    ensure_dir(output_dir)
-
     block = str(concept_cfg.block)
-    pos_prompts = list(concept_cfg.pos_prompts)
-    neg_prompts = list(concept_cfg.neg_prompts)
-    if not pos_prompts or not neg_prompts:
-        raise ValueError("exp53 需要同时提供 --pos_prompts 和 --neg_prompts（至少各 1 条）。")
 
-    # 1) session 允许外部传入（批量跑多个概念时避免重复加载 SDXL/SAE）。
+    # 0) prompts 输入：统一从 `target_concept_dict/{concept_name}.json` 读取。
+    #    这样你可以很方便地扩展 prompt 数量，而不需要在命令行写很长的列表。
+    concept_name_raw = str(concept_cfg.concept_name or "").strip()
+    pos_prompts, neg_prompts, raw_json = _load_concept_prompts_from_json(concept_name=concept_name_raw)
+    if not pos_prompts or not neg_prompts:
+        raise ValueError(f"概念 json 的 pos/neg prompts 不能为空: concept={concept_name_raw}")
+
+    # 1) 输出目录固定组织为 out_concept_dict/{concept_name}/
+    concept_name = safe_name(concept_name_raw)
+    out_dir = os.path.join("out_concept_dict", concept_name)
+    ensure_dir(out_dir)
+
+    # 2) session 允许外部传入（批量跑多个概念时避免重复加载 SDXL/SAE）。
     local_session = session if session is not None else SDXLExperimentSession(model_cfg, sae_cfg)
     local_session.load_saes([block])
     sae = local_session.get_sae(block)
 
-    # 2) 计算每个 prompt 的 [steps, n_features]，再在 prompt 维度求均值，得到 mu(t, D)
+    # 3) 计算每个 prompt 的 [steps, n_features]，再在 prompt 维度求均值，得到 mu(t, D)
     pos_acc = None
     pos_timesteps: List[int] = []
     for ptxt in pos_prompts:
@@ -184,7 +291,7 @@ def run_exp53_concept_locator_taris(
     if pos_timesteps != neg_timesteps:
         raise ValueError("正负 prompt 的 scheduler timesteps 不一致，请确保 steps 等采样参数一致。")
 
-    # 3) 选择时间窗口内的 step，然后做 TARIS 积分/平均
+    # 4) 选择时间窗口内的 step，然后做 TARIS 积分/平均
     step_indices = _select_step_indices(
         pos_timesteps,
         t_start=int(concept_cfg.t_start),
@@ -198,27 +305,17 @@ def run_exp53_concept_locator_taris(
         delta=float(concept_cfg.delta),
     )
 
-    # 4) 输出 Top-K（正向/反向都给一份，便于看“反概念特征”）
+    # 5) 输出 Top-K（只保留“正向端”，即 scores 最大的那一侧）
     k = max(1, int(concept_cfg.top_k))
     top_pos_vals, top_pos_ids = torch.topk(scores, k=min(k, int(scores.numel())))
-    
-    # 2. 获取 Top-K Negative (反概念特征，即在负样本中显著的特征)
-    # 使用 largest=False 获取最小的数（即负得最多的）
+    # 负向 Top-K：scores 最小（反概念端），暂时保留，后续你可以用来做“anti-concept”分析
     top_neg_vals, top_neg_ids = torch.topk(scores, k=min(k, int(scores.numel())), largest=False)
-
-    # 输出目录组织：
-    # - 传了 concept_name：output_dir/exp53_taris/{concept_name}/
-    # - 不传：             output_dir/exp53_taris/
-    concept_name = safe_name(str(concept_cfg.concept_name or "").strip())
-    if concept_name:
-        out_dir = os.path.join(output_dir, "exp53_taris", concept_name)
-    else:
-        out_dir = os.path.join(output_dir, "exp53_taris")
-    ensure_dir(out_dir)
 
     meta_path = os.path.join(out_dir, "taris_meta.txt")
     with open(meta_path, "w", encoding="utf-8") as f:
         f.write(f"block={block}\n")
+        f.write(f"concept_name={concept_name_raw}\n")
+        f.write(f"concept_json={os.path.join('target_concept_dict', concept_name_raw + '.json')}\n")
         f.write(f"pos_prompts={pos_prompts}\n")
         f.write(f"neg_prompts={neg_prompts}\n")
         f.write(f"t_start={int(concept_cfg.t_start)}\n")
@@ -227,16 +324,21 @@ def run_exp53_concept_locator_taris(
         f.write(f"delta={float(concept_cfg.delta)}\n")
         f.write(f"selected_step_indices={list(map(int, step_indices))}\n")
         f.write(f"selected_timesteps={[int(pos_timesteps[i]) for i in step_indices]}\n")
+        # 原始 json 的其他字段也写一下，方便追溯（例如你未来可能加注释/标签）
+        extras = {k: v for k, v in raw_json.items() if k not in {"pos_prompts", "neg_prompts", "pos", "neg"}}
+        if extras:
+            f.write(f"extras={extras}\n")
 
 
-    # 保存 CSV (分别保存正向和负向)
-    _save_topk_csv(os.path.join(out_dir, "top_positive_features.csv"),top_ids=top_pos_ids,top_vals=top_pos_vals)
-    _save_topk_csv(os.path.join(out_dir, "top_negative_features.csv"),top_ids=top_neg_ids,top_vals=top_neg_vals)
+    # 保存 CSV（正向/负向都输出一份，便于检查与后续扩展）
+    _save_topk_csv(os.path.join(out_dir, "top_positive_features.csv"), top_ids=top_pos_ids, top_vals=top_pos_vals)
+    _save_topk_csv(os.path.join(out_dir, "top_negative_features.csv"), top_ids=top_neg_ids, top_vals=top_neg_vals)
 
     # 保存一份 tensor 包，后续你可以直接加载做更多统计/可视化
     torch.save(
         {
             "block": block,
+            "concept_name": concept_name_raw,
             "pos_prompts": pos_prompts,
             "neg_prompts": neg_prompts,
             "timesteps": pos_timesteps,
@@ -244,6 +346,8 @@ def run_exp53_concept_locator_taris(
             "scores": scores,
             "top_positive_ids": top_pos_ids,
             "top_positive_vals": top_pos_vals,
+            "top_negative_ids": top_neg_ids,
+            "top_negative_vals": top_neg_vals,
             "pos_mu": pos_mu,
             "neg_mu": neg_mu,
         },
@@ -295,23 +399,20 @@ def run_exp53_concept_locator_taris(
     # ==========================================
 
     # Visualization 1: 蝴蝶图 (Diverging Bar Chart)
-    # 直观展示：红色代表概念，蓝色代表反概念，中间是无关特征
+    # 直观展示：红色代表概念端，蓝色代表反概念端
     plt.figure(figsize=(10, 6))
-    
-    # 取两头各 20 个特征画图
-    disp_k = 20
-    pos_v = top_pos_vals[:disp_k].cpu().numpy()[::-1] # 倒序，让最大的在最上面
-    neg_v = top_neg_vals[:disp_k].cpu().numpy()[::-1] # 负值
-    
+
+    disp_k = min(20, int(top_pos_ids.numel()), int(top_neg_ids.numel()))
+    pos_v = top_pos_vals[:disp_k].cpu().numpy()[::-1]  # 倒序：最大的在最上
+    neg_v = top_neg_vals[:disp_k].cpu().numpy()[::-1]
+
     y_pos = np.arange(len(pos_v))
-    
-    plt.barh(y_pos, pos_v, color='#d62728', label='Positive (Concept)', alpha=0.8)
-    plt.barh(y_pos, neg_v, color='#1f77b4', label='Negative (Anti-Concept)', alpha=0.8)
-    
-    plt.axvline(0, color='black', linewidth=0.8)
-    plt.title(f"Top TARIS Scores: {concept_name} vs Anti-Concept")
+    plt.barh(y_pos, pos_v, color="#d62728", label="Positive (Concept)", alpha=0.85)
+    plt.barh(y_pos, neg_v, color="#1f77b4", label="Negative (Anti-Concept)", alpha=0.85)
+    plt.axvline(0, color="black", linewidth=0.8, alpha=0.7)
+    plt.title(f"Top TARIS Scores: {concept_name}")
     plt.xlabel("TARIS Score (Relative Importance Diff)")
-    plt.yticks([]) # 隐藏具体 ID，只看分布态势
+    plt.yticks([])
     plt.legend()
     plt.tight_layout()
     plt.savefig(os.path.join(out_dir, "viz_1_butterfly_chart.png"), dpi=150)
@@ -370,12 +471,12 @@ def run_exp53_concept_locator_taris(
     act_sorted = act_norm[sorted_indices]
     
     plt.figure(figsize=(12, 8))
-    sns.heatmap(act_sorted, cmap="viridis", cbar_kws={'label': 'Normalized Activation'})
-    
+    sns.heatmap(act_sorted, cmap="viridis", cbar_kws={"label": "Normalized Activation"})
+
     plt.title(f"Feature Flow Waterfall: Top {heatmap_k} Concept Features")
     plt.xlabel("Generation Steps (Noise -> Image)")
-    plt.ylabel(f"Features (Sorted by Peak Time)")
-    plt.yticks([]) # 隐藏 Y 轴 label 避免拥挤
+    plt.ylabel("Features (Sorted by Peak Time)")
+    plt.yticks([])
     plt.tight_layout()
     plt.savefig(os.path.join(out_dir, "viz_3_waterfall_flow.png"), dpi=150)
     plt.close()
