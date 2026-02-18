@@ -14,7 +14,7 @@
 
 本文件同时提供一个“单窗口 baseline vs steered”的子实验函数：
 - `run_exp54_causal_intervention(...)`
-它会被 exp05/exp06/exp07/exp21 复用（避免重复代码）。
+它会被 exp05/exp06/exp07 复用（避免重复代码）。
 
 输入参数来源（均已在 CLI 里存在）：
 - int_cfg: 通过 --int_block/--int_feature_ids/--int_mode/--int_scale/--int_t_start/--int_t_end/... 指定

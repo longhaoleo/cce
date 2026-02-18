@@ -35,7 +35,7 @@ def parse_args() -> argparse.Namespace:
     g_model = parser.add_argument_group("模型参数（SDXL）")
     g_sae = parser.add_argument_group("SAE 参数（通用）")
     g_viz = parser.add_argument_group("可视化参数（exp51/exp52）")
-    g_int = parser.add_argument_group("干预参数（exp54/exp05/exp06/exp07/exp21）")
+    g_int = parser.add_argument_group("干预参数（exp54/exp05/exp06/exp07）")
     g_tw = parser.add_argument_group("时间窗参数（exp54 early/late）")
     g_clip = parser.add_argument_group("CLIP 参数（exp07）")
     g_loc = parser.add_argument_group("概念定位（exp53 TARIS）")
