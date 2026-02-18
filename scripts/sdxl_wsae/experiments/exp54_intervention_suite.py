@@ -3,7 +3,7 @@
 
 
 这些实验的核心都是：
-1) 选一个 block + 一组 SAE feature_ids（单特征就是长度=1）
+1) 选一个 block + 从 rank_csv 里取 top-k 特征
 2) 构造干预 hook（Injection/Ablation）
 3) 在扩散轨迹的某个时间窗口内对该 block 输出做干预
 4) 输出生成图 + 该特征随时间的曲线
@@ -17,7 +17,7 @@
 它会被 exp05/exp06/exp07 复用（避免重复代码）。
 
 输入参数来源（均已在 CLI 里存在）：
-- int_cfg: 通过 --int_block/--int_feature_ids/--int_mode/--int_scale/--int_t_start/--int_t_end/... 指定
+- int_cfg: 通过 --int_block/--int_feature_top_k/--int_feature_rank_csv/--int_mode/--int_scale/--int_t_start/--int_t_end/... 指定
 - tw_cfg: 通过 --early_start/--early_end/--late_start/--late_end 指定
 
 输出目录
@@ -42,6 +42,16 @@
 这里的“干预”本身使用的是 `x` 的 SAE 编码系数 `c_i(x)` 来做对称注入/擦除：
 - injection: x <- x + scale * (c_i(x) * d_i)
 - ablation:  x <- x - scale * (c_i(x) * d_i)
+
+默认从 exp53 读取系数曲线（并自动选 top-k 特征）
+----------------------------
+如果你希望更细粒度地控制“在不同 t/step 注入多少”，需要：
+- `--int_coeff_csv out_concept_dict/<concept>/feature_time_scores.csv`
+特征来源改为：
+- `--int_feature_top_k 10`
+默认从 coeff_csv 同目录自动读取 `top_positive_features.csv`。
+
+此时干预系数不再来自当前 x 的 encode，而是来自 exp53 统计的“按 step 的平均激活曲线”。
 """
 
 from __future__ import annotations
@@ -61,6 +71,51 @@ from ..utils import ensure_dir, extract_first_image, safe_name
 from .shared_prepare import DeltaExtractor
 
 
+def _load_topk_feature_ids(csv_path: str, k: int) -> List[int]:
+    """从 top_positive_features.csv 读取前 K 个 feature_id。"""
+    path = os.path.expanduser(str(csv_path))
+    if not path:
+        raise ValueError("feature_rank_csv 不能为空。")
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"feature_rank_csv 不存在: {path}")
+    k = int(k)
+    if k <= 0:
+        raise ValueError("feature_top_k 必须 > 0。")
+
+    rows: List[Tuple[int, float]] = []
+    with open(path, "r", encoding="utf-8") as f:
+        r = csv.DictReader(f)
+        fields = set(r.fieldnames or [])
+        if not {"feature_id", "score"}.issubset(fields):
+            raise ValueError(f"rank csv 缺少列: feature_id/score, got={r.fieldnames}")
+        for row in r:
+            try:
+                fid = int(row["feature_id"])
+                score = float(row["score"])
+            except Exception:
+                continue
+            rows.append((fid, score))
+    rows.sort(key=lambda x: x[1], reverse=True)
+    return [fid for fid, _ in rows[:k]]
+
+
+def _resolve_feature_ids_and_scales(
+    *,
+    int_cfg: CausalInterventionConfig,
+) -> Tuple[List[int], List[float]]:
+    """解析特征 id 与 scale（从 rank_csv 取 top-k，scale 统一为 1）。"""
+    coeff_csv = str(getattr(int_cfg, "coeff_csv", "") or "")
+    if not coeff_csv:
+        raise ValueError("coeff_csv 不能为空（需要从其同目录读取 top_positive_features.csv）。")
+    rank_csv = os.path.join(os.path.dirname(os.path.expanduser(coeff_csv)), "top_positive_features.csv")
+    feature_ids = _load_topk_feature_ids(rank_csv, int(getattr(int_cfg, "feature_top_k", 0)))
+
+    if not feature_ids:
+        raise ValueError("feature_ids 为空，无法从 rank_csv 获取 top-k。")
+    feature_scales = [1.0 for _ in feature_ids]
+    return feature_ids, feature_scales
+
+
 def _concat_images_h(images: List[Image.Image]) -> Image.Image:
     """将多张图片水平拼接。"""
     assert images
@@ -72,6 +127,53 @@ def _concat_images_h(images: List[Image.Image]) -> Image.Image:
         canvas.paste(im, (x, 0))
         x += im.width
     return canvas
+
+
+def _load_coeff_by_step_from_exp53_csv(
+    *,
+    csv_path: str,
+    feature_ids: List[int],
+) -> Dict[int, torch.Tensor]:
+    """从 exp53 的 feature_time_scores.csv 读取“按 step 的系数表”。
+
+    仅支持长表格式：step_idx, feature_id, pos_mu/neg_mu/diff
+    """
+    path = os.path.expanduser(str(csv_path))
+    if not path:
+        raise ValueError("int_coeff_csv 不能为空。")
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"int_coeff_csv 不存在: {path}")
+
+    col = "diff"
+
+    feats = [int(x) for x in feature_ids]
+    fid_to_pos = {fid: i for i, fid in enumerate(feats)}
+
+    tmp: Dict[int, Dict[int, float]] = {}  # step -> fid -> val
+    with open(path, "r", encoding="utf-8") as f:
+        r = csv.DictReader(f)
+        fields = set(r.fieldnames or [])
+
+        if not {"step_idx", "feature_id", col}.issubset(fields):
+            raise ValueError(f"coeff csv 缺少列: step_idx/feature_id/{col}, got={r.fieldnames}")
+        for row in r:
+            try:
+                step = int(row["step_idx"])
+                fid = int(row["feature_id"])
+                if fid not in fid_to_pos:
+                    continue
+                val = float(row[col])
+            except Exception:
+                continue
+            tmp.setdefault(step, {})[fid] = val
+
+    out: Dict[int, torch.Tensor] = {}
+    for step, fid_map in tmp.items():
+        vec = torch.zeros(len(feats), dtype=torch.float32)
+        for fid, v in fid_map.items():
+            vec[fid_to_pos[int(fid)]] = float(v)
+        out[int(step)] = vec
+    return out
 
 
 @torch.no_grad()
@@ -136,16 +238,14 @@ def run_exp54_causal_intervention(
     session.load_saes([block])
     sae = session.get_sae(block)
 
-    # 统一解析“单特征/多特征”参数
-    feature_ids = [int(x) for x in int_cfg.feature_ids]
-    if not feature_ids:
-        raise ValueError("feature_ids 不能为空。")
-    if int_cfg.feature_scales:
-        if len(int_cfg.feature_scales) != len(feature_ids):
-            raise ValueError("int_feature_scales 长度必须与 int_feature_ids 相同。")
-        feature_scales = [float(x) for x in int_cfg.feature_scales]
-    else:
-        feature_scales = [1.0 for _ in feature_ids]
+    # 统一解析“单特征/多特征/从 rank_csv 取 top-k”参数
+    feature_ids, feature_scales = _resolve_feature_ids_and_scales(int_cfg=int_cfg)
+
+    # 从 exp53 导出的 csv 读取“按 step 的系数”，用于更细粒度控制
+    coeff_by_step = _load_coeff_by_step_from_exp53_csv(
+        csv_path=str(getattr(int_cfg, "coeff_csv", "")),
+        feature_ids=feature_ids,
+    )
 
     baseline_img = None
     baseline_curve = None
@@ -181,6 +281,7 @@ def run_exp54_causal_intervention(
         scale=float(int_cfg.scale),
         spatial_mask=str(getattr(int_cfg, "spatial_mask", "none")),
         mask_sigma=float(getattr(int_cfg, "mask_sigma", 0.25)),
+        coeff_by_step=coeff_by_step,
         t_start=int(int_cfg.t_start),
         t_end=int(int_cfg.t_end),
         step_start=int_cfg.step_start,
@@ -304,16 +405,14 @@ def run_exp54_intervention_suite(
     session.load_saes([block])
     sae = session.get_sae(block)
 
-    # 统一解析“单特征/多特征”参数
-    feature_ids = [int(x) for x in int_cfg.feature_ids]
-    if not feature_ids:
-        raise ValueError("feature_ids 不能为空。")
-    if int_cfg.feature_scales:
-        if len(int_cfg.feature_scales) != len(feature_ids):
-            raise ValueError("int_feature_scales 长度必须与 int_feature_ids 相同。")
-        feature_scales = [float(x) for x in int_cfg.feature_scales]
-    else:
-        feature_scales = [1.0 for _ in feature_ids]
+    # 统一解析“单特征/多特征/从 rank_csv 取 top-k”参数
+    feature_ids, feature_scales = _resolve_feature_ids_and_scales(int_cfg=int_cfg)
+
+    # 从 exp53 导出的 csv 读取“按 step 的系数”，用于更细粒度控制
+    coeff_by_step = _load_coeff_by_step_from_exp53_csv(
+        csv_path=str(getattr(int_cfg, "coeff_csv", "")),
+        feature_ids=feature_ids,
+    )
 
     # 1) Baseline：不加 hook，正常采样并缓存该 block 的输入/输出（可选）
     baseline_img = None
@@ -380,6 +479,7 @@ def run_exp54_intervention_suite(
         scale=float(int_cfg.scale),
         spatial_mask=str(getattr(int_cfg, "spatial_mask", "none")),
         mask_sigma=float(getattr(int_cfg, "mask_sigma", 0.25)),
+        coeff_by_step=coeff_by_step,
         t_start=int(int_cfg.t_start),
         t_end=int(int_cfg.t_end),
         step_start=int_cfg.step_start,
@@ -401,6 +501,7 @@ def run_exp54_intervention_suite(
         scale=float(int_cfg.scale),
         spatial_mask=str(getattr(int_cfg, "spatial_mask", "none")),
         mask_sigma=float(getattr(int_cfg, "mask_sigma", 0.25)),
+        coeff_by_step=coeff_by_step,
         t_start=int(tw_cfg.early_start),
         t_end=int(tw_cfg.early_end),
         step_start=int_cfg.step_start,
@@ -415,6 +516,7 @@ def run_exp54_intervention_suite(
         scale=float(int_cfg.scale),
         spatial_mask=str(getattr(int_cfg, "spatial_mask", "none")),
         mask_sigma=float(getattr(int_cfg, "mask_sigma", 0.25)),
+        coeff_by_step=coeff_by_step,
         t_start=int(tw_cfg.late_start),
         t_end=int(tw_cfg.late_end),
         step_start=int_cfg.step_start,

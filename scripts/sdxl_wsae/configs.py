@@ -68,8 +68,7 @@ class CausalInterventionConfig:
     """特征干预配置（统一入口是 exp54，exp05/06/07 复用同一套参数）。"""
 
     block: str = "unet.mid_block.attentions.0"
-    feature_ids: Tuple[int, ...] = (0,)
-    feature_scales: Tuple[float, ...] = ()
+    feature_top_k: int = 0  # 从 rank_csv 里取前 K 个
     mode: str = "injection"  # injection | ablation
     scale: float = 1.0  # 全局强度系数（会乘到每个特征的 feature_scales 上）
     # 空间约束（可选）：打破“全图对称性”
@@ -77,6 +76,10 @@ class CausalInterventionConfig:
     # - gaussian_center: 以中心为峰值的 2D 高斯 mask，边缘权重更小
     spatial_mask: str = "none"
     mask_sigma: float = 0.25  # sigma 的相对尺度（乘 min(H,W) 得到像素尺度）
+    # 系数来源：
+    # - from_x: 在推理时从当前 x 做 SAE.encode 得到 c_i(x)（默认）
+    # - from_csv: 从 exp53 导出的“按 step/t 的激活曲线 csv”读取，每个 step 使用预先统计的系数
+    coeff_csv: str = ""  # out_concept_dict/<concept>/feature_time_scores.csv
     t_start: int = 600
     t_end: int = 200
     step_start: Optional[int] = None

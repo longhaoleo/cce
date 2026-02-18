@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, List, Optional, Tuple
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Tuple
 import torch
 
 
@@ -21,6 +21,11 @@ class InterventionSpec:
     # 空间约束：默认不启用，避免改变老实验行为
     spatial_mask: str = "none"  # none | gaussian_center
     mask_sigma: float = 0.25  # sigma 的相对尺度（sigma_px = sigma * min(H,W)）
+    # 系数来源：
+    # - from_x: 用 z=sae.encode(x) 得到 token 级系数 c_i(x)
+    # - from_csv: 用外部统计好的“按 step 的系数表”（来自 exp53 输出）
+    coeff_source: str = "from_x"  # from_x | from_csv
+    coeff_by_step: Dict[int, torch.Tensor] = field(default_factory=dict)  # step_idx -> [k] 系数（按 feature_ids 对齐）
     step_start: Optional[int] = None
     step_end: Optional[int] = None
     apply_only_conditional: bool = True
@@ -252,8 +257,9 @@ def build_feature_intervention_hook(
 
         p = next(sae.parameters())
         flat = flat.to(device=p.device, dtype=p.dtype)
-        z = sae.encode(flat)
-        n_feat = int(z.shape[1])
+
+        # 先用 decoder 的列数作为 n_features（避免为了拿 shape 而强制 encode）
+        n_feat = int(getattr(getattr(sae, "decoder", None), "weight").shape[1])
         ids = [fid for fid in feature_ids if 0 <= int(fid) < n_feat]
         if not ids:
             return output
@@ -266,9 +272,31 @@ def build_feature_intervention_hook(
         dirs = sae.decoder.weight[:, ids].to(device=flat.device, dtype=flat.dtype)
 
         g = float(spec.scale)  # 全局强度
-        # 对每个 token 取出选中 feature 的系数，再重构出对应分量：
+
+        # 系数来源：
+        # - from_x: 用 SAE.encode(flat) 得到 token 级 c_i(x)
+        # - from_csv: 用预先统计好的“按 step 的系数表”，对所有 token 使用同一组系数
+        src = str(spec.coeff_source).lower()
+        if src == "from_csv":
+            # 约定：coeff_by_step 里的向量与 spec.feature_ids 的顺序一致（长度=len(feature_ids)）
+            coeff_vec_full = spec.coeff_by_step.get(int(step_idx))
+            if coeff_vec_full is None:
+                return output
+            if int(coeff_vec_full.numel()) != len(feature_ids):
+                return output
+
+            fid_to_pos = {int(fid): i for i, fid in enumerate(feature_ids)}
+            pos = [fid_to_pos[int(fid)] for fid in ids if int(fid) in fid_to_pos]
+            if not pos:
+                return output
+
+            coeff_vec = coeff_vec_full.to(device=flat.device, dtype=flat.dtype)[pos]  # [k]
+            coeff = coeff_vec.unsqueeze(0).expand(int(flat.shape[0]), -1)  # [tokens, k]
+        else:
+            z = sae.encode(flat)  # [tokens, n_features]
+            coeff = z[:, ids]  # [tokens, k]
+
         # recon = sum_j (c_j * scale_j * d_j)
-        coeff = z[:, ids]  # [tokens, k]
         weighted = coeff * scales.unsqueeze(0)  # [tokens, k]
         recon = weighted @ dirs.t()  # [tokens, d_model]
         recon = _maybe_apply_spatial_mask(recon=recon, meta=meta, spec=spec)
@@ -277,8 +305,6 @@ def build_feature_intervention_hook(
             flat_new = flat + g * recon
         else:
             flat_new = flat - g * recon
-
-        print(f"original flat norm: {flat.norm().item():.4f}, recon norm: {recon.norm().item():.4f}, new flat norm: {flat_new.norm().item():.4f}")
 
         selected_new = _unflatten_spatial(flat_new.to(dtype=selected.dtype, device=selected.device), meta)
         out[sl] = selected_new

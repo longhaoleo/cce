@@ -99,28 +99,24 @@ def parse_args() -> argparse.Namespace:
 
     g_int.add_argument("--int_block", type=str, default="unet.mid_block.attentions.0", help="要干预的 block")
     g_int.add_argument(
-        "--int_feature_ids",
-        nargs="+",
-        type=int,
-        default=[2758, 4052, 919, 473, 366, 878, 2229, 2215, 2932, 2091],
-        help="干预特征 id 列表（单特征就传 1 个）",
+        "--targetconcept",
+        type=str,
+        default="",
+        help="概念名：将自动从 out_concept_dict/<targetconcept>/ 读取 csv",
     )
     g_int.add_argument(
-        "--int_feature_scales",
-        nargs="+",
-        type=float,
-        default=[0.006224330514669418, 0.005031862761825323, 0.00404663709923625, 0.00349993584677577, 
-                 0.002999882912263274, 0.002881488762795925, 0.002654273994266987, 0.0024882021825760603, 
-                 0.0024667761754244566, 0.0023173089139163494],
-        help="每个特征的相对系数（可选；可只给 1 个值用于广播；最终强度=int_scale*feature_scale）",
+        "--int_feature_top_k",
+        type=int,
+        default=0,
+        help="从 rank_csv 取前 K 个特征",
     )
 
-    g_int.add_argument("--int_mode", type=str, default="ablation", choices=["injection", "ablation"], help="injection 或 ablation")
-    g_int.add_argument("--int_scale", type=float, default=10000, help="全局强度系数（公用 scale）")
+    g_int.add_argument("--int_mode", type=str, default="injection", choices=["injection", "ablation"], help="injection 或 ablation")
+    g_int.add_argument("--int_scale", type=float, default=1.0, help="全局强度系数（公用 scale）")
     g_int.add_argument(
         "--int_spatial_mask",
         type=str,
-        default="gaussian_center",
+        default="none",
         choices=["none", "gaussian_center"],
         help="空间 mask（打破全图对称性）：none 或 gaussian_center",
     )
@@ -130,8 +126,8 @@ def parse_args() -> argparse.Namespace:
         default=0.25,
         help="gaussian_center 的 sigma 相对尺度（sigma_px = sigma * min(H,W)）",
     )
-    g_int.add_argument("--int_t_start", type=int, default=900, help="main 窗口：t_start")
-    g_int.add_argument("--int_t_end", type=int, default=600, help="main 窗口：t_end")
+    g_int.add_argument("--int_t_start", type=int, default=600, help="main 窗口：t_start")
+    g_int.add_argument("--int_t_end", type=int, default=200, help="main 窗口：t_end")
     g_int.add_argument("--int_step_start", type=int, default=-1, help=">=0 时启用 step 下界（优先生效）")
     g_int.add_argument("--int_step_end", type=int, default=-1, help=">=0 时启用 step 上界（优先生效）")
     g_int.add_argument("--no_baseline", action="store_true", help="不跑 baseline（节省一半计算）")
@@ -148,12 +144,11 @@ def parse_args() -> argparse.Namespace:
     g_loc.add_argument("--loc_block",type=str,default="unet.mid_block.attentions.0",help="exp53 用：用于定位概念的 SAE block",)
     g_loc.add_argument("--concept_name",type=str,default="",help="exp53 用：概念名（用于组织输出目录，例如 red；留空则不加这一层）",)
     # exp53 改为从 `target_concept_dict/{concept_name}.json` 读取 prompts，
-    # 所以不再从 CLI 接收超长的 pos/neg 列表参数。
-    g_loc.add_argument("--taris_t_start", type=int, default=800, help="时间窗口上界（高噪侧）")
-    g_loc.add_argument("--taris_t_end", type=int, default=200, help="时间窗口下界（低噪侧）")
-    g_loc.add_argument("--taris_num_steps", type=int, default=10, help="窗口内采样步数（<=0 表示全用）")
+    g_loc.add_argument("--taris_t_start", type=int, default=1000, help="时间窗口上界（高噪侧）")
+    g_loc.add_argument("--taris_t_end", type=int, default=0, help="时间窗口下界（低噪侧）")
+    g_loc.add_argument("--taris_num_steps", type=int, default=-1, help="窗口内采样步数（<=0 表示全用）")
     g_loc.add_argument("--taris_delta", type=float, default=1e-6, help="分母稳定项")
-    g_loc.add_argument("--taris_top_k", type=int, default=20, help="输出 top-k 特征数（只输出正向端）")
+    g_loc.add_argument("--taris_top_k", type=int, default=50, help="输出 top-k 特征数（只输出正向端）")
 
     return parser.parse_args()
 
@@ -191,33 +186,26 @@ def build_configs(args: argparse.Namespace):
     )
 
     # 干预特征参数统一口径：
-    # - 只保留 --int_feature_ids（传 1 个就是单特征）
-    # - feature_scales 可不传（默认全 1）；也可只传 1 个数（自动广播）；或传与 ids 等长的列表
-    feature_ids = [int(x) for x in (args.int_feature_ids or [])]
-    if not feature_ids:
-        raise ValueError("--int_feature_ids 不能为空。")
-
-    if args.int_feature_scales:
-        scales = [float(x) for x in args.int_feature_scales]
-        if len(scales) == 1 and len(feature_ids) > 1:
-            scales = [scales[0] for _ in feature_ids]
-        if len(scales) != len(feature_ids):
-            raise ValueError("--int_feature_scales 长度必须与 --int_feature_ids 相同（或只给 1 个用于广播）。")
-        feature_scales = scales
-    else:
-        feature_scales = [1.0 for _ in feature_ids]
+    # - 由 exp54 内部从 rank_csv 取 top-k
 
     # 约定：<0 表示“禁用该 step 边界”
     step_start = None if int(args.int_step_start) < 0 else int(args.int_step_start)
     step_end = None if int(args.int_step_end) < 0 else int(args.int_step_end)
+    # 从 out_concept_dict/<concept>/ 取 csv
+    targetconcept = str(getattr(args, "targetconcept", "") or "").strip()
+    if not targetconcept:
+        raise ValueError("--targetconcept 不能为空。")
+    base_dir = os.path.join("out_concept_dict", targetconcept)
+    coeff_csv = os.path.join(base_dir, "feature_time_scores.csv")
+
     int_cfg = CausalInterventionConfig(
         block=args.int_block,
-        feature_ids=tuple(feature_ids),
-        feature_scales=tuple(feature_scales),
+        feature_top_k=int(args.int_feature_top_k),
         mode=args.int_mode,
         scale=float(args.int_scale),
         spatial_mask=str(args.int_spatial_mask),
         mask_sigma=float(args.int_mask_sigma),
+        coeff_csv=str(coeff_csv),
         t_start=int(args.int_t_start),
         t_end=int(args.int_t_end),
         step_start=step_start,

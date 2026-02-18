@@ -220,12 +220,61 @@ def _taris_score(
 
 
 def _save_topk_csv(path: str, *, top_ids: torch.Tensor, top_vals: torch.Tensor) -> None:
+    """保存 Top-K 特征列表（最小格式）。"""
     ensure_dir(os.path.dirname(path) or ".")
     with open(path, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=["rank", "feature_id", "score"])
         w.writeheader()
         for r, (fid, val) in enumerate(zip(top_ids.tolist(), top_vals.tolist()), start=1):
             w.writerow({"rank": int(r), "feature_id": int(fid), "score": float(val)})
+
+
+def _save_feature_time_scores_csv(
+    path: str,
+    *,
+    timesteps: Sequence[int],
+    feature_ids: Sequence[int],
+    scores: torch.Tensor,  # [n_features]
+    pos_mu: torch.Tensor,  # [steps, n_features]
+    neg_mu: torch.Tensor,  # [steps, n_features]
+) -> None:
+    """保存“指定特征集合”的按 step 激活曲线（用于 exp54 的更细粒度控制）。
+
+    CSV（长表）字段：
+    - step_idx, timestep, feature_id
+    - taris_score: 该特征的全局 TARIS 分数（与 time 无关）
+    - pos_mu, neg_mu, diff
+    """
+    ensure_dir(os.path.dirname(path) or ".")
+    ids = [int(x) for x in feature_ids]
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(
+            f,
+            fieldnames=[
+                "step_idx",
+                "timestep",
+                "feature_id",
+                "taris_score",
+                "pos_mu",
+                "neg_mu",
+                "diff",
+            ],
+        )
+        w.writeheader()
+
+        for step_idx, t in enumerate(list(timesteps)):
+            for fid in ids:
+                w.writerow(
+                    {
+                        "step_idx": int(step_idx),
+                        "timestep": int(t),
+                        "feature_id": int(fid),
+                        "taris_score": float(scores[int(fid)].item()),
+                        "pos_mu": float(pos_mu[int(step_idx), int(fid)].item()),
+                        "neg_mu": float(neg_mu[int(step_idx), int(fid)].item()),
+                        "diff": float((pos_mu[int(step_idx), int(fid)] - neg_mu[int(step_idx), int(fid)]).item()),
+                    }
+                )
 
 
 def run_exp53_concept_locator_taris(
@@ -333,6 +382,17 @@ def run_exp53_concept_locator_taris(
     # 保存 CSV（正向/负向都输出一份，便于检查与后续扩展）
     _save_topk_csv(os.path.join(out_dir, "top_positive_features.csv"), top_ids=top_pos_ids, top_vals=top_pos_vals)
     _save_topk_csv(os.path.join(out_dir, "top_negative_features.csv"), top_ids=top_neg_ids, top_vals=top_neg_vals)
+
+    # 额外输出：Top+ 特征在不同 t/step 的平均激活（pos/neg/diff）
+    # 用于 exp54 做更细粒度的时间调制（不必每次推理都从 x 重新估计系数）。
+    _save_feature_time_scores_csv(
+        os.path.join(out_dir, "feature_time_scores.csv"),
+        timesteps=pos_timesteps,
+        feature_ids=top_pos_ids.tolist(),
+        scores=scores,
+        pos_mu=pos_mu,
+        neg_mu=neg_mu,
+    )
 
     # 保存一份 tensor 包，后续你可以直接加载做更多统计/可视化
     torch.save(
