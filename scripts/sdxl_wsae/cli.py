@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-
+import os
 from .configs import (
     CausalInterventionConfig,
     ConceptLocateConfig,
@@ -101,18 +101,18 @@ def parse_args() -> argparse.Namespace:
     g_int.add_argument(
         "--targetconcept",
         type=str,
-        default="",
+        default="car",
         help="概念名：将自动从 out_concept_dict/<targetconcept>/ 读取 csv",
     )
     g_int.add_argument(
         "--int_feature_top_k",
         type=int,
-        default=0,
+        default=1,
         help="从 rank_csv 取前 K 个特征",
     )
 
-    g_int.add_argument("--int_mode", type=str, default="injection", choices=["injection", "ablation"], help="injection 或 ablation")
-    g_int.add_argument("--int_scale", type=float, default=1.0, help="全局强度系数（公用 scale）")
+    g_int.add_argument("--int_mode", type=str, default="ablation", choices=["injection", "ablation"], help="injection 或 ablation")
+    g_int.add_argument("--int_scale", type=float, default=10, help="全局强度系数（公用 scale）")
     g_int.add_argument(
         "--int_spatial_mask",
         type=str,
@@ -126,8 +126,8 @@ def parse_args() -> argparse.Namespace:
         default=0.25,
         help="gaussian_center 的 sigma 相对尺度（sigma_px = sigma * min(H,W)）",
     )
-    g_int.add_argument("--int_t_start", type=int, default=600, help="main 窗口：t_start")
-    g_int.add_argument("--int_t_end", type=int, default=200, help="main 窗口：t_end")
+    g_int.add_argument("--int_t_start", type=int, default=800, help="main 窗口：t_start")
+    g_int.add_argument("--int_t_end", type=int, default=400, help="main 窗口：t_end")
     g_int.add_argument("--int_step_start", type=int, default=-1, help=">=0 时启用 step 下界（优先生效）")
     g_int.add_argument("--int_step_end", type=int, default=-1, help=">=0 时启用 step 上界（优先生效）")
     g_int.add_argument("--no_baseline", action="store_true", help="不跑 baseline（节省一半计算）")
