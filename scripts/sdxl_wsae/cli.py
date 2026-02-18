@@ -120,7 +120,7 @@ def parse_args() -> argparse.Namespace:
     g_int.add_argument(
         "--int_spatial_mask",
         type=str,
-        default="none",
+        default="gaussian_center",
         choices=["none", "gaussian_center"],
         help="空间 mask（打破全图对称性）：none 或 gaussian_center",
     )
@@ -130,8 +130,8 @@ def parse_args() -> argparse.Namespace:
         default=0.25,
         help="gaussian_center 的 sigma 相对尺度（sigma_px = sigma * min(H,W)）",
     )
-    g_int.add_argument("--int_t_start", type=int, default=800, help="main 窗口：t_start")
-    g_int.add_argument("--int_t_end", type=int, default=200, help="main 窗口：t_end")
+    g_int.add_argument("--int_t_start", type=int, default=900, help="main 窗口：t_start")
+    g_int.add_argument("--int_t_end", type=int, default=600, help="main 窗口：t_end")
     g_int.add_argument("--int_step_start", type=int, default=-1, help=">=0 时启用 step 下界（优先生效）")
     g_int.add_argument("--int_step_end", type=int, default=-1, help=">=0 时启用 step 上界（优先生效）")
     g_int.add_argument("--no_baseline", action="store_true", help="不跑 baseline（节省一半计算）")
