@@ -25,7 +25,7 @@
 输出到 `output_dir/exp54_intervention_suite/`：
 - baseline.png（若启用 baseline）
 - main_injection.png 或 main_ablation.png
-- early_injection.png / late_injection.png（仅当 main=inj）
+- early_{mode}.png / late_{mode}.png（mode=injection/ablation）
 - compare_*.png（把可用的图片横向拼接，便于快速肉眼对比）
 - suite_curve_{block}_f{feature}.csv
 - suite_curve_{block}_f{feature}.png
@@ -388,40 +388,41 @@ def run_exp54_intervention_suite(
     )
     main_img, main_curve = _run_one(name=main_name, spec=main_spec)
 
-    # 2.2) early/late：只有当 main 是 injection 时才跑
+    # 2.2) early/late：无论 injection/ablation 都跑（保持对称，便于比较时间敏感性）
     early_img = late_img = None
     early_curve = late_curve = None
-    if main_mode == "injection":
-        early_spec = InterventionSpec(
-            block=block,
-            feature_ids=tuple(feature_ids),
-            feature_scales=tuple(feature_scales),
-            mode="injection",
-            scale=float(int_cfg.scale),
-            spatial_mask=str(getattr(int_cfg, "spatial_mask", "none")),
-            mask_sigma=float(getattr(int_cfg, "mask_sigma", 0.25)),
-            t_start=int(tw_cfg.early_start),
-            t_end=int(tw_cfg.early_end),
-            step_start=int_cfg.step_start,
-            step_end=int_cfg.step_end,
-            apply_only_conditional=True,
-        )
-        late_spec = InterventionSpec(
-            block=block,
-            feature_ids=tuple(feature_ids),
-            feature_scales=tuple(feature_scales),
-            mode="injection",
-            scale=float(int_cfg.scale),
-            spatial_mask=str(getattr(int_cfg, "spatial_mask", "none")),
-            mask_sigma=float(getattr(int_cfg, "mask_sigma", 0.25)),
-            t_start=int(tw_cfg.late_start),
-            t_end=int(tw_cfg.late_end),
-            step_start=int_cfg.step_start,
-            step_end=int_cfg.step_end,
-            apply_only_conditional=True,
-        )
-        early_img, early_curve = _run_one(name="early_injection", spec=early_spec)
-        late_img, late_curve = _run_one(name="late_injection", spec=late_spec)
+    early_name = f"early_{main_mode}"
+    late_name = f"late_{main_mode}"
+    early_spec = InterventionSpec(
+        block=block,
+        feature_ids=tuple(feature_ids),
+        feature_scales=tuple(feature_scales),
+        mode=main_mode,
+        scale=float(int_cfg.scale),
+        spatial_mask=str(getattr(int_cfg, "spatial_mask", "none")),
+        mask_sigma=float(getattr(int_cfg, "mask_sigma", 0.25)),
+        t_start=int(tw_cfg.early_start),
+        t_end=int(tw_cfg.early_end),
+        step_start=int_cfg.step_start,
+        step_end=int_cfg.step_end,
+        apply_only_conditional=True,
+    )
+    late_spec = InterventionSpec(
+        block=block,
+        feature_ids=tuple(feature_ids),
+        feature_scales=tuple(feature_scales),
+        mode=main_mode,
+        scale=float(int_cfg.scale),
+        spatial_mask=str(getattr(int_cfg, "spatial_mask", "none")),
+        mask_sigma=float(getattr(int_cfg, "mask_sigma", 0.25)),
+        t_start=int(tw_cfg.late_start),
+        t_end=int(tw_cfg.late_end),
+        step_start=int_cfg.step_start,
+        step_end=int_cfg.step_end,
+        apply_only_conditional=True,
+    )
+    early_img, early_curve = _run_one(name=early_name, spec=early_spec)
+    late_img, late_curve = _run_one(name=late_name, spec=late_spec)
 
     # 3) 拼接对比图：把可用的图片横向拼接
     compare_imgs: List[Tuple[str, Image.Image]] = []
@@ -430,9 +431,9 @@ def run_exp54_intervention_suite(
     if main_img is not None:
         compare_imgs.append((main_name, main_img))
     if early_img is not None:
-        compare_imgs.append(("early", early_img))
+        compare_imgs.append((early_name, early_img))
     if late_img is not None:
-        compare_imgs.append(("late", late_img))
+        compare_imgs.append((late_name, late_img))
     if len(compare_imgs) >= 2:
         concat = _concat_images_h([im for _, im in compare_imgs])
         tags = "_".join(tag for tag, _ in compare_imgs)
@@ -445,9 +446,9 @@ def run_exp54_intervention_suite(
     if baseline_curve is not None:
         curves["baseline"] = baseline_curve
     if early_curve is not None:
-        curves["early_injection"] = early_curve
+        curves[early_name] = early_curve
     if late_curve is not None:
-        curves["late_injection"] = late_curve
+        curves[late_name] = late_curve
 
     n = min(len(v[2]) for v in curves.values())
     ref_key = next(iter(curves.keys()))
