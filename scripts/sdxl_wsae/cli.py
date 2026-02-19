@@ -68,14 +68,16 @@ def parse_args() -> argparse.Namespace:
     g_sae.add_argument("--prefer_k", type=int, default=10, help="检查点选择优先 k")
     g_sae.add_argument("--prefer_hidden", type=int, default=5120, help="检查点选择优先 hidden")
 
-    g_exp51.add_argument("--blocks",nargs="+",default=list(DEFAULT_BLOCKS),help="需要 hook 的 block 列表",)
+    g_exp51.add_argument("--blocks",nargs="+",
+                         default=list(DEFAULT_BLOCKS),
+                         help="需要 hook 的 block 列表",)
     g_exp51.add_argument("--sae_top_k", type=int, default=10, help="top-k")
     g_exp51.add_argument("--delta_stride", type=int, default=1, help="每隔多少 step 保存一张叠加图")
     g_exp51.add_argument("--overlay_alpha", type=float, default=0.75, help="叠加透明度")
     g_exp51.add_argument(
         "--exp51_feature_csv",
         type=str,
-        default="",
+        default="out_concept_dict/car/top_positive_features.csv",
         help="指定特征集合的 csv 做可视化（例如 out_concept_dict/<concept>/top_positive_features.csv；留空则每步动态 top-k）",
     )
     g_exp51.add_argument(
@@ -94,7 +96,9 @@ def parse_args() -> argparse.Namespace:
     g_exp52.add_argument("--waterfall_norm", type=str, default="none", choices=["row", "global", "none"], help="归一化方式")
     g_exp52.add_argument("--waterfall_cmap", type=str, default="magma", help="colormap")
 
-    g_exp53.add_argument("--loc_block",type=str,default="unet.mid_block.attentions.0",help="用于定位概念的 SAE block",)
+    g_exp53.add_argument("--loc_block",type=str,
+                         default="unet.mid_block.attentions.0",
+                         help="用于定位概念的 SAE block",)
     g_exp53.add_argument("--concept_name",type=str,default="",help="概念名（用于组织输出目录，例如 red；留空则不加这一层）",)
     # exp53 改为从 `target_concept_dict/{concept_name}.json` 读取 prompts，
     g_exp53.add_argument("--taris_t_start", type=int, default=1000, help="时间窗口上界（高噪侧）")
@@ -111,18 +115,18 @@ def parse_args() -> argparse.Namespace:
     g_exp54.add_argument(
         "--targetconcept",
         type=str,
-        default="car",
+        default="red",
         help="概念名：将自动从 out_concept_dict/<targetconcept>/ 读取 csv",
     )
     g_exp54.add_argument(
         "--int_feature_top_k",
         type=int,
-        default=1,
+        default=10,
         help="从 rank_csv 取前 K 个特征",
     )
 
-    g_exp54.add_argument("--int_mode", type=str, default="ablation", choices=["injection", "ablation"], help="injection 或 ablation")
-    g_exp54.add_argument("--int_scale", type=float, default=10, help="全局强度系数（公用 scale）")
+    g_exp54.add_argument("--int_mode", type=str, default="injection", choices=["injection", "ablation"], help="injection 或 ablation")
+    g_exp54.add_argument("--int_scale", type=float, default=1000, help="全局强度系数（公用 scale）")
     g_exp54.add_argument(
         "--int_spatial_mask",
         type=str,
