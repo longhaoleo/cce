@@ -24,21 +24,23 @@ def parse_args() -> argparse.Namespace:
 
     参数分层：
     - 通用层：模型路径、采样参数、输出路径；
-    - 可视化层：exp51 / exp52 参数；
-    - 干预层：exp54/05/06/07/21 的 feature intervention 参数；
-    - 评估层：exp07 的 CLIP 文本参数；
-    - 时间层：exp54 的早晚注入窗口。
+    - exp51：top-k 可视化参数；
+    - exp52：瀑布图参数；
+    - exp53：概念定位（TARIS）参数；
+    - exp54：干预参数 + 时间窗参数；
+    - exp07：CLIP 评估参数。
     """
     parser = argparse.ArgumentParser(description="SDXL SAE 实验平台（统一入口）")
 
     g_main = parser.add_argument_group("主参数（通用）")
     g_model = parser.add_argument_group("模型参数（SDXL）")
     g_sae = parser.add_argument_group("SAE 参数（通用）")
-    g_viz = parser.add_argument_group("可视化参数（exp51/exp52）")
-    g_int = parser.add_argument_group("干预参数（exp54/exp05/exp06/exp07）")
-    g_tw = parser.add_argument_group("时间窗参数（exp54 early/late）")
-    g_clip = parser.add_argument_group("CLIP 参数（exp07）")
-    g_loc = parser.add_argument_group("概念定位（exp53 TARIS）")
+    g_exp51 = parser.add_argument_group("exp51：Top-K 可视化")
+    g_exp52 = parser.add_argument_group("exp52：瀑布图")
+    g_exp53 = parser.add_argument_group("exp53：概念定位（TARIS）")
+    g_exp54 = parser.add_argument_group("exp54：特征干预")
+    g_exp54_tw = parser.add_argument_group("exp54：时间窗（early/late）")
+    g_clip = parser.add_argument_group("exp07：CLIP 评估")
 
     g_main.add_argument(
         "--experiment",
@@ -59,96 +61,97 @@ def parse_args() -> argparse.Namespace:
     g_main.add_argument("--steps", type=int, default=30)
     g_main.add_argument("--guidance_scale", type=float, default=8.0)
     g_main.add_argument("--seed", type=int, default=42)
-    g_main.add_argument("--output_dir", type=str, default="./wsae_res_sdxl_output")
+    g_main.add_argument("--output_dir", type=str, default="./image_output")
 
     # g_sae.add_argument("--sae_root", type=str, default="~/sdxl-saes", help="SAE 检查点根目录")
     g_sae.add_argument("--sae_root", type=str, default="~/autodl-tmp/sdxl-saes", help="SAE 检查点根目录")
     g_sae.add_argument("--prefer_k", type=int, default=10, help="检查点选择优先 k")
     g_sae.add_argument("--prefer_hidden", type=int, default=5120, help="检查点选择优先 hidden")
-    g_viz.add_argument(
-        "--blocks",
-        nargs="+",
-        default=list(DEFAULT_BLOCKS),
-        help="exp51/52 用：需要 hook 的 block 列表",
-    )
 
-    g_viz.add_argument("--sae_top_k", type=int, default=10, help="exp51 用：top-k")
-    g_viz.add_argument("--delta_stride", type=int, default=1, help="exp51 用：每隔多少 step 保存一张叠加图")
-    g_viz.add_argument("--overlay_alpha", type=float, default=0.75, help="exp51 用：叠加透明度")
-    g_viz.add_argument(
+    g_exp51.add_argument("--blocks",nargs="+",default=list(DEFAULT_BLOCKS),help="需要 hook 的 block 列表",)
+    g_exp51.add_argument("--sae_top_k", type=int, default=10, help="top-k")
+    g_exp51.add_argument("--delta_stride", type=int, default=1, help="每隔多少 step 保存一张叠加图")
+    g_exp51.add_argument("--overlay_alpha", type=float, default=0.75, help="叠加透明度")
+    g_exp51.add_argument(
         "--exp51_feature_csv",
         type=str,
         default="",
-        help="exp51 用：指定特征集合的 csv（例如 out_concept_dict/<concept>/top_positive_features.csv；留空则每步动态 top-k）",
+        help="指定特征集合的 csv 做可视化（例如 out_concept_dict/<concept>/top_positive_features.csv；留空则每步动态 top-k）",
     )
-    g_viz.add_argument(
+    g_exp51.add_argument(
         "--exp51_feature_k",
         type=int,
-        default=0,
-        help="exp51 用：从 csv 里取前 K 个 feature（<=0 表示全取）",
+        default=10,
+        help="从 csv 里取前 K 个 feature（<=0 表示全取）",
     )
-    g_viz.add_argument(
+    g_exp51.add_argument(
         "--exp51_feature_coeff_scale",
         type=float,
         default=1.0,
-        help="exp51 用：固定特征集合模式下，对这些特征的系数 c_i 统一乘一个缩放（默认 1.0）",
+        help="固定特征集合模式下，对这些特征的系数 c_i 统一乘一个缩放（默认 1.0）",
     )
-    g_viz.add_argument("--waterfall_max_features", type=int, default=1024, help="exp52 用：最多画多少特征")
-    g_viz.add_argument("--waterfall_norm", type=str, default="row", choices=["row", "global", "none"], help="exp52 用：归一化方式")
-    g_viz.add_argument("--waterfall_cmap", type=str, default="magma", help="exp52 用：colormap")
+    g_exp52.add_argument("--waterfall_max_features", type=int, default=1024, help="最多画多少特征")
+    g_exp52.add_argument("--waterfall_norm", type=str, default="none", choices=["row", "global", "none"], help="归一化方式")
+    g_exp52.add_argument("--waterfall_cmap", type=str, default="magma", help="colormap")
 
-    g_int.add_argument("--int_block", type=str, default="unet.mid_block.attentions.0", help="要干预的 block")
-    g_int.add_argument(
+    g_exp53.add_argument("--loc_block",type=str,default="unet.mid_block.attentions.0",help="用于定位概念的 SAE block",)
+    g_exp53.add_argument("--concept_name",type=str,default="",help="概念名（用于组织输出目录，例如 red；留空则不加这一层）",)
+    # exp53 改为从 `target_concept_dict/{concept_name}.json` 读取 prompts，
+    g_exp53.add_argument("--taris_t_start", type=int, default=1000, help="时间窗口上界（高噪侧）")
+    g_exp53.add_argument("--taris_t_end", type=int, default=0, help="时间窗口下界（低噪侧）")
+    g_exp53.add_argument("--taris_num_steps", type=int, default=20, help="窗口内采样步数（<=0 表示全用）")
+    g_exp53.add_argument("--taris_delta", type=float, default=1e-6, help="分母稳定项")
+    g_exp53.add_argument("--taris_top_k", type=int, default=50, help="输出 top-k 特征数（只输出正向端）")
+
+
+    g_exp54.add_argument("--int_block", type=str, 
+                        # default="unet.mid_block.attentions.0",
+                        default="unet.up_blocks.0.attentions.0",
+                        help="要干预的 block")
+    g_exp54.add_argument(
         "--targetconcept",
         type=str,
         default="car",
         help="概念名：将自动从 out_concept_dict/<targetconcept>/ 读取 csv",
     )
-    g_int.add_argument(
+    g_exp54.add_argument(
         "--int_feature_top_k",
         type=int,
         default=1,
         help="从 rank_csv 取前 K 个特征",
     )
 
-    g_int.add_argument("--int_mode", type=str, default="ablation", choices=["injection", "ablation"], help="injection 或 ablation")
-    g_int.add_argument("--int_scale", type=float, default=10, help="全局强度系数（公用 scale）")
-    g_int.add_argument(
+    g_exp54.add_argument("--int_mode", type=str, default="ablation", choices=["injection", "ablation"], help="injection 或 ablation")
+    g_exp54.add_argument("--int_scale", type=float, default=10, help="全局强度系数（公用 scale）")
+    g_exp54.add_argument(
         "--int_spatial_mask",
         type=str,
         default="none",
         choices=["none", "gaussian_center"],
         help="空间 mask（打破全图对称性）：none 或 gaussian_center",
     )
-    g_int.add_argument(
+    g_exp54.add_argument(
         "--int_mask_sigma",
         type=float,
         default=0.25,
         help="gaussian_center 的 sigma 相对尺度（sigma_px = sigma * min(H,W)）",
     )
-    g_int.add_argument("--int_t_start", type=int, default=800, help="main 窗口：t_start")
-    g_int.add_argument("--int_t_end", type=int, default=400, help="main 窗口：t_end")
-    g_int.add_argument("--int_step_start", type=int, default=-1, help=">=0 时启用 step 下界（优先生效）")
-    g_int.add_argument("--int_step_end", type=int, default=-1, help=">=0 时启用 step 上界（优先生效）")
-    g_int.add_argument("--no_baseline", action="store_true", help="不跑 baseline（节省一半计算）")
+    g_exp54.add_argument("--int_t_start", type=int, default=800, help="main 窗口：t_start")
+    g_exp54.add_argument("--int_t_end", type=int, default=400, help="main 窗口：t_end")
+    g_exp54.add_argument("--int_step_start", type=int, default=-1, help=">=0 时启用 step 下界（优先生效）")
+    g_exp54.add_argument("--int_step_end", type=int, default=-1, help=">=0 时启用 step 上界（优先生效）")
+    g_exp54.add_argument("--no_baseline", action="store_true", help="不跑 baseline（节省一半计算）")
+
+    g_exp54_tw.add_argument("--early_start", type=int, default=1000, help="early 窗口 t_start")
+    g_exp54_tw.add_argument("--early_end", type=int, default=800, help="early 窗口 t_end")
+    g_exp54_tw.add_argument("--late_start", type=int, default=200, help="late 窗口 t_start")
+    g_exp54_tw.add_argument("--late_end", type=int, default=0, help="late 窗口 t_end")
+
+
 
     g_clip.add_argument("--clip_target_text", type=str, default="red")
     g_clip.add_argument("--clip_preserve_text", type=str, default="car")
     g_clip.add_argument("--clip_model_name", type=str, default="openai/clip-vit-large-patch14")
-
-    g_tw.add_argument("--early_start", type=int, default=1000, help="early 窗口 t_start")
-    g_tw.add_argument("--early_end", type=int, default=800, help="early 窗口 t_end")
-    g_tw.add_argument("--late_start", type=int, default=200, help="late 窗口 t_start")
-    g_tw.add_argument("--late_end", type=int, default=0, help="late 窗口 t_end")
-
-    g_loc.add_argument("--loc_block",type=str,default="unet.mid_block.attentions.0",help="exp53 用：用于定位概念的 SAE block",)
-    g_loc.add_argument("--concept_name",type=str,default="",help="exp53 用：概念名（用于组织输出目录，例如 red；留空则不加这一层）",)
-    # exp53 改为从 `target_concept_dict/{concept_name}.json` 读取 prompts，
-    g_loc.add_argument("--taris_t_start", type=int, default=1000, help="时间窗口上界（高噪侧）")
-    g_loc.add_argument("--taris_t_end", type=int, default=0, help="时间窗口下界（低噪侧）")
-    g_loc.add_argument("--taris_num_steps", type=int, default=-1, help="窗口内采样步数（<=0 表示全用）")
-    g_loc.add_argument("--taris_delta", type=float, default=1e-6, help="分母稳定项")
-    g_loc.add_argument("--taris_top_k", type=int, default=50, help="输出 top-k 特征数（只输出正向端）")
 
     return parser.parse_args()
 

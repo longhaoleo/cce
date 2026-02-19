@@ -38,37 +38,47 @@ from sdxl_wsae.experiments.exp53_concept_locator_taris import run_exp53_concept_
 
 def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description="Batch run exp53 (TARIS) for concepts in a json folder")
-    ap.add_argument(
+    g_main = ap.add_argument_group("主参数")
+    g_model = ap.add_argument_group("模型/SAE")
+    g_run = ap.add_argument_group("采样参数")
+    g_taris = ap.add_argument_group("TARIS 参数")
+
+    g_main.add_argument(
         "--concept_dir",
         type=str,
         default="./target_concept_dict",
         help="概念 json 文件夹（每个 json 文件名就是 concept_name）",
     )
-
-    ap.add_argument("--sae_root", type=str, default="~/autodl-tmp/sdxl-saes")
-    ap.add_argument("--model_id", type=str, default="~/autodl-tmp/models/sd-xl-base-1.0-fp16-only")
-    ap.add_argument("--device", type=str, default="cuda")
-    ap.add_argument("--dtype", type=str, default="fp16")
-    ap.add_argument("--prefer_k", type=int, default=10)
-    ap.add_argument("--prefer_hidden", type=int, default=5120)
-
-    ap.add_argument("--loc_block", type=str, default="unet.mid_block.attentions.0")
-    ap.add_argument("--steps", type=int, default=30)
-    ap.add_argument("--guidance_scale", type=float, default=8.0)
-    ap.add_argument("--seed", type=int, default=42)
-
-    ap.add_argument("--taris_t_start", type=int, default=800)
-    ap.add_argument("--taris_t_end", type=int, default=200)
-    ap.add_argument("--taris_num_steps", type=int, default=10)
-    ap.add_argument("--taris_delta", type=float, default=1e-6)
-    ap.add_argument("--taris_top_k", type=int, default=50)
-
-    ap.add_argument(
+    g_main.add_argument(
         "--only",
         nargs="*",
         default=[],
         help="只跑这些概念名（空表示全跑），例如 --only red glasses",
     )
+
+    g_model.add_argument("--sae_root", type=str, default="~/autodl-tmp/sdxl-saes")
+    g_model.add_argument("--model_id", type=str, default="~/autodl-tmp/models/sd-xl-base-1.0-fp16-only")
+    g_model.add_argument("--device", type=str, default="cuda")
+    g_model.add_argument("--dtype", type=str, default="fp16")
+    g_model.add_argument("--prefer_k", type=int, default=10)
+    g_model.add_argument("--prefer_hidden", type=int, default=5120)
+
+    g_run.add_argument(
+        "--loc_block",
+        type=str,
+        # default="unet.mid_block.attentions.0",
+        default="unet.up_blocks.0.attentions.0",
+    )
+    g_run.add_argument("--steps", type=int, default=30)
+    g_run.add_argument("--guidance_scale", type=float, default=8.0)
+    g_run.add_argument("--seed", type=int, default=42)
+
+    g_taris.add_argument("--taris_t_start", type=int, default=1000, help="时间窗口上界（高噪侧）")
+    g_taris.add_argument("--taris_t_end", type=int, default=0, help="时间窗口下界（低噪侧）")
+    g_taris.add_argument("--taris_num_steps", type=int, default=20)
+    g_taris.add_argument("--taris_delta", type=float, default=1e-6)
+    g_taris.add_argument("--taris_top_k", type=int, default=50)
+
     return ap.parse_args()
 
 
@@ -142,4 +152,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

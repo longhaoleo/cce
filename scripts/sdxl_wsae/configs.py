@@ -8,8 +8,8 @@ from typing import Optional, Tuple
 
 DEFAULT_BLOCKS = [
     # "unet.down_blocks.2.attentions.1",
-    "unet.mid_block.attentions.0",
-    # "unet.up_blocks.0.attentions.0",
+    # "unet.mid_block.attentions.0",
+    "unet.up_blocks.0.attentions.0",
     # "unet.up_blocks.0.attentions.1",
 ]
 

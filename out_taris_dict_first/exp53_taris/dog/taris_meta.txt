@@ -1,9 +1,0 @@
-block=unet.mid_block.attentions.0
-pos_prompts=['a photo of a dog on the grass', 'a dog sitting on a sofa', 'a puppy running in the park', 'a close-up portrait of a dog', 'a dog sleeping on a rug']
-neg_prompts=['a photo of empty green grass', 'an empty sofa', 'an empty park with trees', 'a close-up photo of a background texture', 'an empty rug on the floor']
-t_start=800
-t_end=200
-num_t_samples=10
-delta=1e-06
-selected_step_indices=[5, 6, 8, 10, 12, 14, 16, 18, 20, 22]
-selected_timesteps=[793, 760, 694, 628, 562, 496, 430, 364, 298, 232]
