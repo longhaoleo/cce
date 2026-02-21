@@ -46,7 +46,7 @@
 默认从 exp53 读取系数曲线（并自动选 top-k 特征）
 ----------------------------
 如果你希望更细粒度地控制“在不同 t/step 注入多少”，需要：
-- `--int_coeff_csv out_concept_dict/<concept>/feature_time_scores.csv`
+- `--int_coeff_csv out_concept_dict_<block_short>/<concept>/feature_time_scores.csv`
 特征来源改为：
 - `--int_feature_top_k 10`
 默认从 coeff_csv 同目录自动读取 `top_positive_features.csv`。
@@ -67,7 +67,7 @@ from PIL import Image
 from ..configs import CausalInterventionConfig, RunConfig, SAEConfig, TemporalWindowConfig
 from ..core.intervention import InterventionSpec, build_feature_intervention_hook
 from ..core.session import SDXLExperimentSession
-from ..utils import ensure_dir, extract_first_image, safe_name
+from ..utils import ensure_dir, extract_first_image, safe_name, block_short_name
 from .shared_prepare import DeltaExtractor
 
 
@@ -101,14 +101,15 @@ def _load_topk_feature_ids(csv_path: str, k: int) -> List[int]:
 
 def _resolve_feature_ids_and_scales(
     *,
-    int_cfg: CausalInterventionConfig,
+    block: str,
+    targetconcept: str,
+    feature_top_k: int,
 ) -> Tuple[List[int], List[float]]:
-    """解析特征 id 与 scale（从 rank_csv 取 top-k，scale 统一为 1）。"""
-    coeff_csv = str(getattr(int_cfg, "coeff_csv", "") or "")
-    if not coeff_csv:
-        raise ValueError("coeff_csv 不能为空（需要从其同目录读取 top_positive_features.csv）。")
-    rank_csv = os.path.join(os.path.dirname(os.path.expanduser(coeff_csv)), "top_positive_features.csv")
-    feature_ids = _load_topk_feature_ids(rank_csv, int(getattr(int_cfg, "feature_top_k", 0)))
+    """解析特征 id 与 scale（从 block 专属目录的 rank_csv 取 top-k，scale=1）。"""
+    block_tag = block_short_name(block)
+    base_dir = os.path.join(f"out_concept_dict_{block_tag}", targetconcept)
+    rank_csv = os.path.join(base_dir, "top_positive_features.csv")
+    feature_ids = _load_topk_feature_ids(rank_csv, int(feature_top_k))
 
     if not feature_ids:
         raise ValueError("feature_ids 为空，无法从 rank_csv 获取 top-k。")
@@ -220,39 +221,37 @@ def run_exp54_causal_intervention(
     int_cfg: CausalInterventionConfig,
     output_dir: str,
 ) -> None:
-    """exp54 的“单窗口因果干预”子实验（供 exp05/06/07/21 复用）。
-
-    这就是历史上的 exp04：baseline vs steered。
-
-    输出文件（都写到 output_dir 下）：
-    - intervention_baseline.png（可选，由 int_cfg.compare_baseline 控制）
-    - intervention_steered.png
-    - intervention_compare.png（可选：有 baseline 才会输出）
-    - intervention_feature_curve.csv
-    - intervention_curve_{block}_f{...}.png
-    """
+    """exp54 单窗口干预，支持多 block 同时 hook。"""
     ensure_dir(output_dir)
-    block = str(int_cfg.block)
+    blocks = list(getattr(int_cfg, "blocks", ()) or [])
+    if not blocks:
+        raise ValueError("int_cfg.blocks 不能为空。")
 
     session = SDXLExperimentSession(model_cfg, sae_cfg)
-    session.load_saes([block])
-    sae = session.get_sae(block)
+    session.load_saes(blocks)
 
-    # 统一解析“单特征/多特征/从 rank_csv 取 top-k”参数
-    feature_ids, feature_scales = _resolve_feature_ids_and_scales(int_cfg=int_cfg)
-
-    # 从 exp53 导出的 csv 读取“按 step 的系数”，用于更细粒度控制
-    coeff_by_step = _load_coeff_by_step_from_exp53_csv(
-        csv_path=str(getattr(int_cfg, "coeff_csv", "")),
-        feature_ids=feature_ids,
-    )
+    feats_by_block: Dict[str, Tuple[List[int], List[float]]] = {}
+    coeffs_by_block: Dict[str, Dict[int, torch.Tensor]] = {}
+    for block in blocks:
+        f_ids, f_scales = _resolve_feature_ids_and_scales(
+            block=block,
+            targetconcept=str(getattr(int_cfg, "targetconcept", "")),
+            feature_top_k=int(getattr(int_cfg, "feature_top_k", 0)),
+        )
+        base_dir = os.path.join(f"out_concept_dict_{block_short_name(block)}", str(getattr(int_cfg, "targetconcept", "")))
+        coeffs = _load_coeff_by_step_from_exp53_csv(
+            csv_path=os.path.join(base_dir, "feature_time_scores.csv"),
+            feature_ids=f_ids,
+        )
+        feats_by_block[block] = (f_ids, f_scales)
+        coeffs_by_block[block] = coeffs
 
     baseline_img = None
-    baseline_curve = None
+    baseline_curves: Dict[str, Tuple[List[int], List[int], List[float]]] = {}
     if bool(getattr(int_cfg, "compare_baseline", True)):
         out_base, cache_base = session.run_with_cache(
             run_cfg,
-            positions_to_cache=[block],
+            positions_to_cache=blocks,
             save_input=True,
             save_output=True,
             output_type="pil",
@@ -264,36 +263,43 @@ def run_exp54_causal_intervention(
             print(f"已保存 baseline: {baseline_path}")
 
         timesteps = session.scheduler_timesteps(session.pipe)
-        baseline_curve = _feature_curve_from_cache(
-            cache=cache_base,
-            timesteps=timesteps,
-            block=block,
-            sae=sae,
-            feature_ids=feature_ids,
-            feature_scales=feature_scales,
-        )
+        for block in blocks:
+            sae = session.get_sae(block)
+            f_ids, f_scales = feats_by_block[block]
+            baseline_curves[block] = _feature_curve_from_cache(
+                cache=cache_base,
+                timesteps=timesteps,
+                block=block,
+                sae=sae,
+                feature_ids=f_ids,
+                feature_scales=f_scales,
+            )
 
-    spec = InterventionSpec(
-        block=block,
-        feature_ids=tuple(feature_ids),
-        feature_scales=tuple(feature_scales),
-        mode=str(int_cfg.mode),
-        scale=float(int_cfg.scale),
-        spatial_mask=str(getattr(int_cfg, "spatial_mask", "none")),
-        mask_sigma=float(getattr(int_cfg, "mask_sigma", 0.25)),
-        coeff_by_step=coeff_by_step,
-        t_start=int(int_cfg.t_start),
-        t_end=int(int_cfg.t_end),
-        step_start=int_cfg.step_start,
-        step_end=int_cfg.step_end,
-        apply_only_conditional=True,
-    )
-    hook = build_feature_intervention_hook(pipe=session.pipe, sae=sae, spec=spec)
+    hooks = {}
+    for block in blocks:
+        sae = session.get_sae(block)
+        f_ids, f_scales = feats_by_block[block]
+        spec = InterventionSpec(
+            block=block,
+            feature_ids=tuple(f_ids),
+            feature_scales=tuple(f_scales),
+            mode=str(int_cfg.mode),
+            scale=float(int_cfg.scale),
+            spatial_mask=str(getattr(int_cfg, "spatial_mask", "none")),
+            mask_sigma=float(getattr(int_cfg, "mask_sigma", 0.25)),
+            coeff_by_step=coeffs_by_block[block],
+            t_start=int(int_cfg.t_start),
+            t_end=int(int_cfg.t_end),
+            step_start=int_cfg.step_start,
+            step_end=int_cfg.step_end,
+            apply_only_conditional=True,
+        )
+        hooks[block] = build_feature_intervention_hook(pipe=session.pipe, sae=sae, spec=spec)
 
     out_steer, cache_steer = session.run_with_hooks_and_cache(
         run_cfg,
-        position_hook_dict={block: hook},
-        positions_to_cache=[block],
+        position_hook_dict=hooks,
+        positions_to_cache=blocks,
         save_input=True,
         save_output=True,
         output_type="pil",
@@ -305,14 +311,18 @@ def run_exp54_causal_intervention(
         print(f"已保存 steered: {steered_path}")
 
     timesteps = session.scheduler_timesteps(session.pipe)
-    steps_s, ts_s, vals_s = _feature_curve_from_cache(
-        cache=cache_steer,
-        timesteps=timesteps,
-        block=block,
-        sae=sae,
-        feature_ids=feature_ids,
-        feature_scales=feature_scales,
-    )
+    curves_steer: Dict[str, Tuple[List[int], List[int], List[float]]] = {}
+    for block in blocks:
+        sae = session.get_sae(block)
+        f_ids, f_scales = feats_by_block[block]
+        curves_steer[block] = _feature_curve_from_cache(
+            cache=cache_steer,
+            timesteps=timesteps,
+            block=block,
+            sae=sae,
+            feature_ids=f_ids,
+            feature_scales=f_scales,
+        )
 
     if baseline_img is not None and steered_img is not None:
         compare = _concat_images_h([baseline_img, steered_img])
@@ -320,73 +330,16 @@ def run_exp54_causal_intervention(
         compare.save(compare_path)
         print(f"已保存对比图: {compare_path}")
 
-    csv_path = os.path.join(output_dir, "intervention_feature_curve.csv")
-    with open(csv_path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(
-            f,
-            fieldnames=[
-                "step_idx",
-                "timestep",
-                "feature_ids",
-                "feature_scales",
-                "baseline_value",
-                "steered_value",
-                "delta",
-            ],
-        )
-        writer.writeheader()
-        if baseline_curve is None:
-            for i in range(len(steps_s)):
-                writer.writerow(
-                    {
-                        "step_idx": steps_s[i],
-                        "timestep": ts_s[i],
-                        "feature_ids": " ".join(str(x) for x in feature_ids),
-                        "feature_scales": " ".join(str(x) for x in feature_scales),
-                        "baseline_value": "",
-                        "steered_value": vals_s[i],
-                        "delta": "",
-                    }
-                )
-        else:
-            steps_b, ts_b, vals_b = baseline_curve
-            n = min(len(vals_b), len(vals_s))
-            for i in range(n):
-                writer.writerow(
-                    {
-                        "step_idx": steps_s[i],
-                        "timestep": ts_s[i],
-                        "feature_ids": " ".join(str(x) for x in feature_ids),
-                        "feature_scales": " ".join(str(x) for x in feature_scales),
-                        "baseline_value": vals_b[i],
-                        "steered_value": vals_s[i],
-                        "delta": vals_s[i] - vals_b[i],
-                    }
-                )
-    print(f"已保存曲线 CSV: {csv_path}")
-
-    fid_tag = f"f{feature_ids[0]}_k{len(feature_ids)}" if len(feature_ids) > 1 else f"f{feature_ids[0]}"
-    curve_path = os.path.join(output_dir, f"intervention_curve_{safe_name(block)}_{fid_tag}.png")
-    plt.figure(figsize=(10, 4))
-    if baseline_curve is not None:
-        _, _, vals_b = baseline_curve
-        plt.plot(range(len(vals_b)), vals_b, label="baseline", marker="o")
-    plt.plot(range(len(vals_s)), vals_s, label="steered", marker="s")
-    plt.xlabel("step_idx")
-    plt.ylabel("feature activation")
-    plt.title(
-        f"Intervention Curve | block={block}\n"
-        f"mode={int_cfg.mode} features={feature_ids} scales={feature_scales} global_scale={float(int_cfg.scale)} "
-        f"mask={str(getattr(int_cfg, 'spatial_mask', 'none'))} sigma={float(getattr(int_cfg, 'mask_sigma', 0.25))}"
-    )
-    plt.grid(alpha=0.3)
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(curve_path, dpi=160)
-    plt.close()
-    print(f"已保存曲线图: {curve_path}")
-
-
+    for block in blocks:
+        steps_s, ts_s, vals_s = curves_steer[block]
+        steps_b, ts_b, vals_b = baseline_curves.get(block, ([], [], []))
+        curve_csv = os.path.join(output_dir, f"intervention_curve_{safe_name(block)}.csv")
+        with open(curve_csv, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(["step_idx", "timestep", "steer_value", "baseline_value"])
+            for (s, t, v_s), (_, _, v_b) in zip(zip(steps_s, ts_s, vals_s), zip(steps_b, ts_b, vals_b)):
+                writer.writerow([s, t, v_s, v_b if baseline_curves else ""])
+        print(f"已保存曲线: {curve_csv}")
 def run_exp54_intervention_suite(
     model_cfg,
     sae_cfg: SAEConfig,
@@ -395,59 +348,88 @@ def run_exp54_intervention_suite(
     tw_cfg: TemporalWindowConfig,
     output_dir: str,
 ) -> None:
-    """执行 exp54：baseline + main +（可选）early/late 对比。"""
+    """执行 exp54：baseline + main + early/late，对多个 block 同时干预。"""
     ensure_dir(output_dir)
     root = os.path.join(output_dir, "exp54_intervention_suite")
     ensure_dir(root)
 
-    block = str(int_cfg.block)
+    blocks = list(getattr(int_cfg, "blocks", ()) or [])
+    if not blocks:
+        raise ValueError("int_cfg.blocks 不能为空。")
+
     session = SDXLExperimentSession(model_cfg, sae_cfg)
-    session.load_saes([block])
-    sae = session.get_sae(block)
+    session.load_saes(blocks)
 
-    # 统一解析“单特征/多特征/从 rank_csv 取 top-k”参数
-    feature_ids, feature_scales = _resolve_feature_ids_and_scales(int_cfg=int_cfg)
+    feats_by_block: Dict[str, Tuple[List[int], List[float]]] = {}
+    coeffs_by_block: Dict[str, Dict[int, torch.Tensor]] = {}
+    for block in blocks:
+        f_ids, f_scales = _resolve_feature_ids_and_scales(
+            block=block,
+            targetconcept=str(getattr(int_cfg, "targetconcept", "")),
+            feature_top_k=int(getattr(int_cfg, "feature_top_k", 0)),
+        )
+        base_dir = os.path.join(f"out_concept_dict_{block_short_name(block)}", str(getattr(int_cfg, "targetconcept", "")))
+        coeffs = _load_coeff_by_step_from_exp53_csv(
+            csv_path=os.path.join(base_dir, "feature_time_scores.csv"),
+            feature_ids=f_ids,
+        )
+        feats_by_block[block] = (f_ids, f_scales)
+        coeffs_by_block[block] = coeffs
 
-    # 从 exp53 导出的 csv 读取“按 step 的系数”，用于更细粒度控制
-    coeff_by_step = _load_coeff_by_step_from_exp53_csv(
-        csv_path=str(getattr(int_cfg, "coeff_csv", "")),
-        feature_ids=feature_ids,
-    )
-
-    # 1) Baseline：不加 hook，正常采样并缓存该 block 的输入/输出（可选）
+    # baseline（可选）
     baseline_img = None
-    baseline_curve = None
+    baseline_curves: Dict[str, Tuple[List[int], List[int], List[float]]] = {}
     if bool(getattr(int_cfg, "compare_baseline", True)):
         out_base, cache_base = session.run_with_cache(
             run_cfg,
-            positions_to_cache=[block],
+            positions_to_cache=blocks,
             save_input=True,
             save_output=True,
             output_type="pil",
         )
         baseline_img = extract_first_image(out_base)
         if baseline_img is not None:
-            pth = os.path.join(root, "baseline.png")
-            baseline_img.save(pth)
-            print(f"已保存 baseline: {pth}")
-
+            baseline_img.save(os.path.join(root, "baseline.png"))
+            print(f"已保存 baseline: {os.path.join(root, 'baseline.png')}")
         timesteps = session.scheduler_timesteps(session.pipe)
-        baseline_curve = _feature_curve_from_cache(
-            cache=cache_base,
-            timesteps=timesteps,
-            block=block,
-            sae=sae,
-            feature_ids=feature_ids,
-            feature_scales=feature_scales,
-        )
+        for block in blocks:
+            sae = session.get_sae(block)
+            f_ids, f_scales = feats_by_block[block]
+            baseline_curves[block] = _feature_curve_from_cache(
+                cache=cache_base,
+                timesteps=timesteps,
+                block=block,
+                sae=sae,
+                feature_ids=f_ids,
+                feature_scales=f_scales,
+            )
 
-    # 2) 通用：跑一次“带 hook 的推理”，并返回生成图 + 曲线
-    def _run_one(*, name: str, spec: InterventionSpec):
-        hook = build_feature_intervention_hook(pipe=session.pipe, sae=sae, spec=spec)
+    def _run_one(name: str, t_start: int, t_end: int):
+        hooks = {}
+        for block in blocks:
+            sae = session.get_sae(block)
+            f_ids, f_scales = feats_by_block[block]
+            spec = InterventionSpec(
+                block=block,
+                feature_ids=tuple(f_ids),
+                feature_scales=tuple(f_scales),
+                mode=str(int_cfg.mode),
+                scale=float(int_cfg.scale),
+                spatial_mask=str(getattr(int_cfg, "spatial_mask", "none")),
+                mask_sigma=float(getattr(int_cfg, "mask_sigma", 0.25)),
+                coeff_by_step=coeffs_by_block[block],
+                t_start=int(t_start),
+                t_end=int(t_end),
+                step_start=int_cfg.step_start,
+                step_end=int_cfg.step_end,
+                apply_only_conditional=True,
+            )
+            hooks[block] = build_feature_intervention_hook(pipe=session.pipe, sae=sae, spec=spec)
+
         out, cache = session.run_with_hooks_and_cache(
             run_cfg,
-            position_hook_dict={block: hook},
-            positions_to_cache=[block],
+            position_hook_dict=hooks,
+            positions_to_cache=blocks,
             save_input=True,
             save_output=True,
             output_type="pil",
@@ -458,84 +440,33 @@ def run_exp54_intervention_suite(
             img.save(pth)
             print(f"已保存 {name}: {pth}")
         timesteps = session.scheduler_timesteps(session.pipe)
-        curve = _feature_curve_from_cache(
-            cache=cache,
-            timesteps=timesteps,
-            block=block,
-            sae=sae,
-            feature_ids=feature_ids,
-            feature_scales=feature_scales,
-        )
-        return img, curve
+        curves: Dict[str, Tuple[List[int], List[int], List[float]]] = {}
+        for block in blocks:
+            sae = session.get_sae(block)
+            f_ids, f_scales = feats_by_block[block]
+            curves[block] = _feature_curve_from_cache(
+                cache=cache,
+                timesteps=timesteps,
+                block=block,
+                sae=sae,
+                feature_ids=f_ids,
+                feature_scales=f_scales,
+            )
+        return img, curves
 
-    # 2.1) main：等价于原 exp04（mode + t_start/t_end）
-    main_mode = str(int_cfg.mode).lower()
-    main_name = f"main_{main_mode}"
-    main_spec = InterventionSpec(
-        block=block,
-        feature_ids=tuple(feature_ids),
-        feature_scales=tuple(feature_scales),
-        mode=main_mode,  # injection | ablation
-        scale=float(int_cfg.scale),
-        spatial_mask=str(getattr(int_cfg, "spatial_mask", "none")),
-        mask_sigma=float(getattr(int_cfg, "mask_sigma", 0.25)),
-        coeff_by_step=coeff_by_step,
-        t_start=int(int_cfg.t_start),
-        t_end=int(int_cfg.t_end),
-        step_start=int_cfg.step_start,
-        step_end=int_cfg.step_end,
-        apply_only_conditional=True,
-    )
-    main_img, main_curve = _run_one(name=main_name, spec=main_spec)
+    main_img, main_curves = _run_one("main" + f"_{int_cfg.mode}", int_cfg.t_start, int_cfg.t_end)
+    early_img, early_curves = _run_one("early" + f"_{int_cfg.mode}", tw_cfg.early_start, tw_cfg.early_end)
+    late_img, late_curves = _run_one("late" + f"_{int_cfg.mode}", tw_cfg.late_start, tw_cfg.late_end)
 
-    # 2.2) early/late：无论 injection/ablation 都跑（保持对称，便于比较时间敏感性）
-    early_img = late_img = None
-    early_curve = late_curve = None
-    early_name = f"early_{main_mode}"
-    late_name = f"late_{main_mode}"
-    early_spec = InterventionSpec(
-        block=block,
-        feature_ids=tuple(feature_ids),
-        feature_scales=tuple(feature_scales),
-        mode=main_mode,
-        scale=float(int_cfg.scale),
-        spatial_mask=str(getattr(int_cfg, "spatial_mask", "none")),
-        mask_sigma=float(getattr(int_cfg, "mask_sigma", 0.25)),
-        coeff_by_step=coeff_by_step,
-        t_start=int(tw_cfg.early_start),
-        t_end=int(tw_cfg.early_end),
-        step_start=int_cfg.step_start,
-        step_end=int_cfg.step_end,
-        apply_only_conditional=True,
-    )
-    late_spec = InterventionSpec(
-        block=block,
-        feature_ids=tuple(feature_ids),
-        feature_scales=tuple(feature_scales),
-        mode=main_mode,
-        scale=float(int_cfg.scale),
-        spatial_mask=str(getattr(int_cfg, "spatial_mask", "none")),
-        mask_sigma=float(getattr(int_cfg, "mask_sigma", 0.25)),
-        coeff_by_step=coeff_by_step,
-        t_start=int(tw_cfg.late_start),
-        t_end=int(tw_cfg.late_end),
-        step_start=int_cfg.step_start,
-        step_end=int_cfg.step_end,
-        apply_only_conditional=True,
-    )
-    early_img, early_curve = _run_one(name=early_name, spec=early_spec)
-    late_img, late_curve = _run_one(name=late_name, spec=late_spec)
-
-    # 3) 拼接对比图：把可用的图片横向拼接
-    compare_imgs: List[Tuple[str, Image.Image]] = []
+    compare_imgs = []
     if baseline_img is not None:
         compare_imgs.append(("baseline", baseline_img))
     if main_img is not None:
-        compare_imgs.append((main_name, main_img))
+        compare_imgs.append(("main", main_img))
     if early_img is not None:
-        compare_imgs.append((early_name, early_img))
+        compare_imgs.append(("early", early_img))
     if late_img is not None:
-        compare_imgs.append((late_name, late_img))
+        compare_imgs.append(("late", late_img))
     if len(compare_imgs) >= 2:
         concat = _concat_images_h([im for _, im in compare_imgs])
         tags = "_".join(tag for tag, _ in compare_imgs)
@@ -543,56 +474,26 @@ def run_exp54_intervention_suite(
         concat.save(out_path)
         print(f"已保存拼接对比图: {out_path}")
 
-    # 4) 曲线导出：统一写一个 CSV，并画一张对比曲线
-    curves: Dict[str, Tuple[List[int], List[int], List[float]]] = {main_name: main_curve}
-    if baseline_curve is not None:
-        curves["baseline"] = baseline_curve
-    if early_curve is not None:
-        curves[early_name] = early_curve
-    if late_curve is not None:
-        curves[late_name] = late_curve
-
-    n = min(len(v[2]) for v in curves.values())
-    ref_key = next(iter(curves.keys()))
-    steps_ref, ts_ref, _ = curves[ref_key]
-
-    fid_tag = f"f{feature_ids[0]}_k{len(feature_ids)}" if len(feature_ids) > 1 else f"f{feature_ids[0]}"
-    csv_path = os.path.join(root, f"suite_curve_{safe_name(block)}_{fid_tag}.csv")
-    with open(csv_path, "w", newline="", encoding="utf-8") as f:
-        fieldnames = ["step_idx", "timestep", "feature_ids", "feature_scales"] + [f"{k}_value" for k in curves.keys()]
-        w = csv.DictWriter(f, fieldnames=fieldnames)
-        w.writeheader()
-        for i in range(n):
-            row = {
-                "step_idx": int(steps_ref[i]),
-                "timestep": int(ts_ref[i]),
-                "feature_ids": " ".join(str(x) for x in feature_ids),
-                "feature_scales": " ".join(str(x) for x in feature_scales),
-            }
-            for k, (_, _, vals) in curves.items():
-                row[f"{k}_value"] = float(vals[i])
-            w.writerow(row)
-    print(f"已保存曲线 CSV: {csv_path}")
-
-    fig_path = os.path.join(root, f"suite_curve_{safe_name(block)}_{fid_tag}.png")
-    plt.figure(figsize=(10, 4))
-    markers = ["o", "s", "^", "x", "d"]
-    for idx, (k, (_, _, vals)) in enumerate(curves.items()):
-        plt.plot(range(n), vals[:n], label=k, marker=markers[idx % len(markers)])
-    plt.xlabel("step_idx")
-    plt.ylabel("feature activation")
-    plt.title(
-        f"exp54 Intervention Suite | block={block} features={feature_ids}\n"
-        f"main={main_mode} scale={float(int_cfg.scale)} "
-        f"main=[{int(int_cfg.t_start)},{int(int_cfg.t_end)}] "
-        f"early=[{int(tw_cfg.early_start)},{int(tw_cfg.early_end)}] "
-        f"late=[{int(tw_cfg.late_start)},{int(tw_cfg.late_end)}]"
-    )
-    plt.grid(alpha=0.3)
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(fig_path, dpi=160)
-    plt.close()
-    print(f"已保存曲线图: {fig_path}")
-
-    print(f"实验 54 完成，输出目录: {root}")
+    # 导出曲线：每个 block 一份 CSV，包含 baseline/main/early/late
+    for block in blocks:
+        csv_path = os.path.join(root, f"suite_curve_{safe_name(block)}.csv")
+        with open(csv_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(["step_idx", "timestep", "baseline", "main", "early", "late"])
+            steps_main, ts_main, vals_main = main_curves[block]
+            steps_base, ts_base, vals_base = baseline_curves.get(block, ([], [], []))
+            steps_early, ts_early, vals_early = early_curves.get(block, ([], [], []))
+            steps_late, ts_late, vals_late = late_curves.get(block, ([], [], []))
+            n = len(steps_main)
+            for i in range(n):
+                writer.writerow(
+                    [
+                        steps_main[i],
+                        ts_main[i],
+                        vals_base[i] if vals_base else "",
+                        vals_main[i],
+                        vals_early[i] if vals_early else "",
+                        vals_late[i] if vals_late else "",
+                    ]
+                )
+        print(f"已保存曲线: {csv_path}")

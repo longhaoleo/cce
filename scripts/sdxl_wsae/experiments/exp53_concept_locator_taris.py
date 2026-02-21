@@ -32,7 +32,7 @@ import seaborn as sns
 
 from ..configs import ConceptLocateConfig, RunConfig, SAEConfig
 from ..core.session import SDXLExperimentSession
-from ..utils import ensure_dir, safe_name
+from ..utils import ensure_dir, safe_name, block_short_name
 from .shared_prepare import DeltaExtractor
 
 
@@ -296,9 +296,10 @@ def run_exp53_concept_locator_taris(
     if not pos_prompts or not neg_prompts:
         raise ValueError(f"概念 json 的 pos/neg prompts 不能为空: concept={concept_name_raw}")
 
-    # 1) 输出目录固定组织为 out_concept_dict/{concept_name}/
+    # 1) 输出目录固定组织为 out_concept_dict_<block_short>/{concept_name}/
     concept_name = safe_name(concept_name_raw)
-    out_dir = os.path.join("out_concept_dict", concept_name)
+    block_tag = block_short_name(str(block))
+    out_dir = os.path.join(f"out_concept_dict_{block_tag}", concept_name)
     ensure_dir(out_dir)
 
     # 2) session 允许外部传入（批量跑多个概念时避免重复加载 SDXL/SAE）。

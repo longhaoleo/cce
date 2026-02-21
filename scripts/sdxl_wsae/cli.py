@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from email.policy import default
 import os
 from .configs import (
     CausalInterventionConfig,
@@ -16,6 +17,7 @@ from .configs import (
 from .experiments.registry import SUPPORTED_EXPERIMENTS, run_experiment
 from .experiments.exp07_clip_alignment import ClipEvalConfig
 from .configs import TemporalWindowConfig
+from .utils import block_short_name, safe_name
 
 
 def parse_args() -> argparse.Namespace:
@@ -39,6 +41,7 @@ def parse_args() -> argparse.Namespace:
     g_exp52 = parser.add_argument_group("exp52：瀑布图")
     g_exp53 = parser.add_argument_group("exp53：概念定位（TARIS）")
     g_exp54 = parser.add_argument_group("exp54：特征干预")
+    g_block = parser.add_argument_group("exp54：可多 block")
     g_exp54_tw = parser.add_argument_group("exp54：时间窗（early/late）")
     g_clip = parser.add_argument_group("exp07：CLIP 评估")
 
@@ -68,17 +71,14 @@ def parse_args() -> argparse.Namespace:
     g_sae.add_argument("--prefer_k", type=int, default=10, help="检查点选择优先 k")
     g_sae.add_argument("--prefer_hidden", type=int, default=5120, help="检查点选择优先 hidden")
 
-    g_exp51.add_argument("--blocks",nargs="+",
-                         default=list(DEFAULT_BLOCKS),
-                         help="需要 hook 的 block 列表",)
     g_exp51.add_argument("--sae_top_k", type=int, default=10, help="top-k")
     g_exp51.add_argument("--delta_stride", type=int, default=1, help="每隔多少 step 保存一张叠加图")
     g_exp51.add_argument("--overlay_alpha", type=float, default=0.75, help="叠加透明度")
     g_exp51.add_argument(
         "--exp51_feature_csv",
         type=str,
-        default="out_concept_dict/car/top_positive_features.csv",
-        help="指定特征集合的 csv 做可视化（例如 out_concept_dict/<concept>/top_positive_features.csv；留空则每步动态 top-k）",
+        default="",
+        help="指定特征集合的 csv 做可视化（例如 out_concept_dict_<block_short>/<concept>/top_positive_features.csv；留空则每步动态 top-k）",
     )
     g_exp51.add_argument(
         "--exp51_feature_k",
@@ -96,9 +96,26 @@ def parse_args() -> argparse.Namespace:
     g_exp52.add_argument("--waterfall_norm", type=str, default="none", choices=["row", "global", "none"], help="归一化方式")
     g_exp52.add_argument("--waterfall_cmap", type=str, default="magma", help="colormap")
 
-    g_exp53.add_argument("--loc_block",type=str,
-                         default="unet.mid_block.attentions.0",
-                         help="用于定位概念的 SAE block",)
+    g_block.add_argument(
+        "--blocks",
+        nargs="+",
+        type=str,
+        default=[
+            # "unet.down_blocks.2.attentions.1",
+            # "unet.mid_block.attentions.0",
+            "unet.up_blocks.0.attentions.0",
+            # "unet.up_blocks.0.attentions.1",
+            ],
+        help="exp51/exp54 用：可传多个 block（同时 hook）",
+    )
+    g_exp53.add_argument(
+        "--loc_block",
+        type=str,
+        default="unet.up_blocks.0.attentions.1",
+        # default="unet.down_blocks.2.attentions.1",
+        # default="unet.mid_block.attentions.0",
+        help="exp53 用：用于定位概念的 SAE block（仅一个）",
+    )
     g_exp53.add_argument("--concept_name",type=str,default="",help="概念名（用于组织输出目录，例如 red；留空则不加这一层）",)
     # exp53 改为从 `target_concept_dict/{concept_name}.json` 读取 prompts，
     g_exp53.add_argument("--taris_t_start", type=int, default=1000, help="时间窗口上界（高噪侧）")
@@ -108,15 +125,11 @@ def parse_args() -> argparse.Namespace:
     g_exp53.add_argument("--taris_top_k", type=int, default=50, help="输出 top-k 特征数（只输出正向端）")
 
 
-    g_exp54.add_argument("--int_block", type=str, 
-                        # default="unet.mid_block.attentions.0",
-                        default="unet.up_blocks.0.attentions.0",
-                        help="要干预的 block")
     g_exp54.add_argument(
         "--targetconcept",
         type=str,
         default="red",
-        help="概念名：将自动从 out_concept_dict/<targetconcept>/ 读取 csv",
+        help="概念名：将自动从 out_concept_dict_<block_short>/<targetconcept>/ 读取 csv",
     )
     g_exp54.add_argument(
         "--int_feature_top_k",
@@ -198,21 +211,39 @@ def build_configs(args: argparse.Namespace):
     # 约定：<0 表示“禁用该 step 边界”
     step_start = None if int(args.int_step_start) < 0 else int(args.int_step_start)
     step_end = None if int(args.int_step_end) < 0 else int(args.int_step_end)
-    # 从 out_concept_dict/<concept>/ 取 csv
+    # 从 out_concept_dict_<block_short>/<concept>/ 取 csv
     targetconcept = str(getattr(args, "targetconcept", "") or "").strip()
     if not targetconcept:
         raise ValueError("--targetconcept 不能为空。")
-    base_dir = os.path.join("out_concept_dict", targetconcept)
-    coeff_csv = os.path.join(base_dir, "feature_time_scores.csv")
+    blocks = [str(b) for b in args.blocks]
+    block_tags = [block_short_name(b) for b in blocks]
+    concept_cfg = ConceptLocateConfig(
+        block=str(args.loc_block),
+        concept_name=str(args.concept_name),
+        t_start=int(args.taris_t_start),
+        t_end=int(args.taris_t_end),
+        num_t_samples=int(args.taris_num_steps),
+        delta=float(args.taris_delta),
+        top_k=int(args.taris_top_k),
+    )
+    # exp54: 构建每个 block 的 coeff 路径（基于 targetconcept）
+    targetconcept = str(getattr(args, "targetconcept", "") or "").strip()
+    if not targetconcept:
+        raise ValueError("--targetconcept 不能为空。")
+    coeff_csvs = {
+        b: os.path.join(f"out_concept_dict_{tag}", targetconcept, "feature_time_scores.csv")
+        for b, tag in zip(blocks, block_tags)
+    }
 
     int_cfg = CausalInterventionConfig(
-        block=args.int_block,
+        blocks=tuple(blocks),
+        targetconcept=targetconcept,
         feature_top_k=int(args.int_feature_top_k),
         mode=args.int_mode,
         scale=float(args.int_scale),
         spatial_mask=str(args.int_spatial_mask),
         mask_sigma=float(args.int_mask_sigma),
-        coeff_csv=str(coeff_csv),
+        coeff_csv="",  # 不再用单路径，改为在 exp54 内按 block 拼路径
         t_start=int(args.int_t_start),
         t_end=int(args.int_t_end),
         step_start=step_start,
@@ -229,16 +260,6 @@ def build_configs(args: argparse.Namespace):
         early_end=int(args.early_end),
         late_start=int(args.late_start),
         late_end=int(args.late_end),
-    )
-
-    concept_cfg = ConceptLocateConfig(
-        block=str(args.loc_block),
-        concept_name=str(args.concept_name),
-        t_start=int(args.taris_t_start),
-        t_end=int(args.taris_t_end),
-        num_t_samples=int(args.taris_num_steps),
-        delta=float(args.taris_delta),
-        top_k=int(args.taris_top_k),
     )
 
     return model_cfg, sae_cfg, run_cfg, viz_cfg, int_cfg, concept_cfg, clip_cfg, tw_cfg

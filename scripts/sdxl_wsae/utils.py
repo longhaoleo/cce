@@ -32,6 +32,21 @@ def safe_name(s: str) -> str:
     return s[:180] if len(s) > 180 else s
 
 
+def block_short_name(block: str) -> str:
+    """将 block 名称压缩成短名（用于 out_concept_dict_<block>）。"""
+    name = str(block).strip()
+    m = re.search(r"up_blocks\.(\d+)\.attentions\.(\d+)", name)
+    if m:
+        return f"up.{m.group(1)}.{m.group(2)}"
+    m = re.search(r"down_blocks\.(\d+)\.attentions\.(\d+)", name)
+    if m:
+        return f"down.{m.group(1)}.{m.group(2)}"
+    m = re.search(r"mid_block\.attentions\.(\d+)", name)
+    if m:
+        return f"mid.{m.group(1)}"
+    return safe_name(name)
+
+
 def extract_first_image(output: Any) -> Optional[Image.Image]:
     """从 pipeline 输出里安全提取第一张 PIL 图像。"""
     if output is None:

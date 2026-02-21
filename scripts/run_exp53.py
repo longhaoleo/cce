@@ -9,7 +9,7 @@
 用法示例：
   python scripts/run_exp53.py
   python scripts/run_exp53.py --only red glasses
-  python scripts/run_exp53.py --concept_dir ./target_concept_dict --loc_block unet.mid_block.attentions.0
+  python scripts/run_exp53.py --concept_dir ./target_concept_dict --block unet.mid_block.attentions.0
 """
 
 from __future__ import annotations
@@ -64,10 +64,13 @@ def parse_args() -> argparse.Namespace:
     g_model.add_argument("--prefer_hidden", type=int, default=5120)
 
     g_run.add_argument(
-        "--loc_block",
+        "--block",
         type=str,
+        # default="unet.up_blocks.0.attentions.0",
+        default="unet.up_blocks.0.attentions.1",
+        # default="unet.down_blocks.2.attentions.1",
         # default="unet.mid_block.attentions.0",
-        default="unet.up_blocks.0.attentions.0",
+        help="用于 exp53 的单 block",
     )
     g_run.add_argument("--steps", type=int, default=30)
     g_run.add_argument("--guidance_scale", type=float, default=8.0)
@@ -111,7 +114,7 @@ def main() -> None:
     )
     sae_cfg = SAEConfig(
         sae_root=args.sae_root,
-        blocks=(str(args.loc_block),),  # exp53 只需要一个 block
+        blocks=(str(args.block),),  # exp53 只需要一个 block
         prefer_k=int(args.prefer_k),
         prefer_hidden=int(args.prefer_hidden),
     )
@@ -130,7 +133,7 @@ def main() -> None:
         # 注意：exp53 会按 concept_name 去 `target_concept_dict/{concept_name}.json` 读取 prompts
         # 如果你这里 concept_dir 不是默认值，请确保 concept_dir 与 exp53 使用的文件夹一致。
         concept_cfg = ConceptLocateConfig(
-            block=str(args.loc_block),
+            block=str(args.block),
             concept_name=str(concept_name),
             t_start=int(args.taris_t_start),
             t_end=int(args.taris_t_end),

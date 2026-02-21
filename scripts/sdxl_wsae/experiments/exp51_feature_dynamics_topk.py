@@ -157,8 +157,9 @@ def _run_topk(
     deltas_by_block: Dict[str, List[StepDelta]],
     saes: Dict[str, torch.nn.Module],
 ) -> None:
-    """Top-K 热图叠加的主流程（对每个 block 各自输出一组图 + 指标）。"""
-    ensure_dir(os.path.join(output_dir, f"sae_delta_vis_top{sae_top_k}"))
+    """Top-K 热图叠加的主流程（对每个 block 各自输出一组图）。"""
+    root = os.path.join(output_dir, f"exp51_topk_k{sae_top_k}")
+    ensure_dir(root)
     projector = SAEFeatureProjector()
     stride = max(1, int(delta_stride))
 
@@ -168,13 +169,8 @@ def _run_topk(
             continue
         sae = saes[block]
 
-        per_block_dir = os.path.join(output_dir, f"sae_delta_vis_top{sae_top_k}", safe_name(block))
+        per_block_dir = os.path.join(root, safe_name(block))
         ensure_dir(per_block_dir)
-
-        rows = []
-        x_idx: List[int] = []
-        top1_scores: List[float] = []
-        topk_scores: List[float] = []
 
         for item in deltas:
             heat_2d, top_ids, top_vals, topk_mass = projector.topk_heatmap(
@@ -185,22 +181,6 @@ def _run_topk(
             )
             top1 = float(top_vals[0].item())
             top1_id = int(top_ids[0].item())
-
-            rows.append(
-                {
-                    "block": block,
-                    "step_idx": int(item.step_idx),
-                    "timestep": int(item.timestep),
-                    "top1_feature_id": top1_id,
-                    "top1_score": top1,
-                    "topk_mass": float(topk_mass),
-                    "topk_ids": " ".join(str(int(x)) for x in top_ids.tolist()),
-                    "topk_scores": " ".join(f"{float(v):.6f}" for v in top_vals.tolist()),
-                }
-            )
-            x_idx.append(int(item.step_idx))
-            top1_scores.append(top1)
-            topk_scores.append(float(topk_mass))
 
             if (item.step_idx % stride) == 0:
                 out_png = os.path.join(
@@ -220,29 +200,6 @@ def _run_topk(
                     alpha=float(overlay_alpha),
                 )
 
-        if rows:
-            csv_path = os.path.join(output_dir, f"metrics_{safe_name(block)}.csv")
-            with open(csv_path, "w", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
-                writer.writeheader()
-                writer.writerows(rows)
-
-            curve_path = os.path.join(output_dir, f"update_curve_{safe_name(block)}.png")
-            plt.figure(figsize=(10, 4))
-            plt.plot(x_idx, top1_scores, marker="o", label="top1_score")
-            plt.plot(x_idx, topk_scores, marker="s", label="topk_mass")
-            plt.xlabel("step_idx")
-            plt.ylabel("activation")
-            plt.title(f"SAE Feature Dynamics: {block}")
-            plt.grid(alpha=0.3)
-            plt.legend()
-            plt.tight_layout()
-            plt.savefig(curve_path, dpi=150)
-            plt.close()
-
-            print(f"[{block}] 指标 CSV: {csv_path}")
-            print(f"[{block}] 曲线图:   {curve_path}")
-
 
 def _run_fixed_features(
     *,
@@ -257,8 +214,8 @@ def _run_fixed_features(
     saes: Dict[str, torch.nn.Module],
     coeff_scale: float,
 ) -> None:
-    """指定特征集合热图叠加（对每个 block 各自输出一组图 + 指标）。"""
-    root = os.path.join(output_dir, f"sae_delta_vis_fixed_{feature_tag}")
+    """指定特征集合热图叠加（对每个 block 各自输出一组图）。"""
+    root = os.path.join(output_dir, f"exp51_fixed_{feature_tag}")
     ensure_dir(root)
     projector = SAEFeatureProjector()
     stride = max(1, int(delta_stride))
@@ -272,10 +229,6 @@ def _run_fixed_features(
         per_block_dir = os.path.join(root, safe_name(block))
         ensure_dir(per_block_dir)
 
-        rows = []
-        x_idx: List[int] = []
-        mass_scores: List[float] = []
-
         for item in deltas:
             heat_2d, used_ids, used_vals, mass = projector.fixed_features_heatmap(
                 sae,
@@ -287,21 +240,6 @@ def _run_fixed_features(
             top_rel = int(torch.argmax(used_vals).item())
             top1_id = int(used_ids[top_rel].item())
             top1_val = float(used_vals[top_rel].item())
-
-            rows.append(
-                {
-                    "block": block,
-                    "step_idx": int(item.step_idx),
-                    "timestep": int(item.timestep),
-                    "feature_ids": " ".join(str(int(x)) for x in used_ids.tolist()),
-                    "feature_scores": " ".join(f"{float(v):.6f}" for v in used_vals.tolist()),
-                    "top1_in_set_feature_id": top1_id,
-                    "top1_in_set_score": top1_val,
-                    "set_mass": float(mass),
-                }
-            )
-            x_idx.append(int(item.step_idx))
-            mass_scores.append(float(mass))
 
             if (item.step_idx % stride) == 0:
                 out_png = os.path.join(
@@ -320,28 +258,6 @@ def _run_fixed_features(
                     base_image=base_image,
                     alpha=float(overlay_alpha),
                 )
-
-        if rows:
-            csv_path = os.path.join(root, f"metrics_fixed_{safe_name(block)}_{feature_tag}.csv")
-            with open(csv_path, "w", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
-                writer.writeheader()
-                writer.writerows(rows)
-
-            curve_path = os.path.join(root, f"fixed_curve_{safe_name(block)}_{feature_tag}.png")
-            plt.figure(figsize=(10, 4))
-            plt.plot(x_idx, mass_scores, marker="o", label="set_mass")
-            plt.xlabel("step_idx")
-            plt.ylabel("activation mass")
-            plt.title(f"SAE Fixed Feature-Set Dynamics: {block} | {feature_tag}")
-            plt.grid(alpha=0.3)
-            plt.legend()
-            plt.tight_layout()
-            plt.savefig(curve_path, dpi=150)
-            plt.close()
-
-            print(f"[{block}] Fixed 指标 CSV: {csv_path}")
-            print(f"[{block}] Fixed 曲线图:   {curve_path}")
 
 
 def run_exp51_feature_dynamics_topk(

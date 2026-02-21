@@ -7,10 +7,10 @@ from typing import Optional, Tuple
 
 
 DEFAULT_BLOCKS = [
-    # "unet.down_blocks.2.attentions.1",
-    # "unet.mid_block.attentions.0",
+    "unet.down_blocks.2.attentions.1",
+    "unet.mid_block.attentions.0",
     "unet.up_blocks.0.attentions.0",
-    # "unet.up_blocks.0.attentions.1",
+    "unet.up_blocks.0.attentions.1",
 ]
 
 
@@ -65,9 +65,10 @@ class VizConfig:
 
 @dataclass
 class CausalInterventionConfig:
-    """特征干预配置（统一入口是 exp54，exp05/06/07 复用同一套参数）。"""
+    """特征干预配置（exp54 及复用入口）。"""
 
-    block: str = "unet.mid_block.attentions.0"
+    blocks: Tuple[str, ...] = ("unet.up_blocks.0.attentions.0",)
+    targetconcept: str = "concept"
     feature_top_k: int = 0  # 从 rank_csv 里取前 K 个
     mode: str = "injection"  # injection | ablation
     scale: float = 1.0  # 全局强度系数（会乘到每个特征的 feature_scales 上）
