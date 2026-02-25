@@ -67,9 +67,9 @@ def parse_args() -> argparse.Namespace:
         "--block",
         type=str,
         # default="unet.up_blocks.0.attentions.0",
-        default="unet.up_blocks.0.attentions.1",
+        # default="unet.up_blocks.0.attentions.1",
         # default="unet.down_blocks.2.attentions.1",
-        # default="unet.mid_block.attentions.0",
+        default="unet.mid_block.attentions.0",
         help="用于 exp53 的单 block",
     )
     g_run.add_argument("--steps", type=int, default=30)
