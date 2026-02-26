@@ -46,7 +46,7 @@ def parse_args() -> argparse.Namespace:
     g_main.add_argument(
         "--experiment",
         type=str,
-        default="exp51",
+        default="exp54",
         choices=list(SUPPORTED_EXPERIMENTS.keys()),
         help="实验编号",
     )
@@ -145,7 +145,7 @@ def parse_args() -> argparse.Namespace:
     )
 
     g_exp54.add_argument("--int_mode", type=str, default="ablation", choices=["injection", "ablation"], help="injection 或 ablation")
-    g_exp54.add_argument("--int_scale", type=float, default=1000, help="全局强度系数（公用 scale）")
+    g_exp54.add_argument("--int_scale", type=float, default=10, help="全局强度系数（公用 scale）")
     g_exp54.add_argument(
         "--int_spatial_mask",
         type=str,
@@ -153,6 +153,7 @@ def parse_args() -> argparse.Namespace:
         choices=["none", "gaussian_center"],
         help="空间 mask（打破全图对称性）：none 或 gaussian_center",
     )
+
     g_exp54.add_argument(
         "--int_mask_sigma",
         type=float,
