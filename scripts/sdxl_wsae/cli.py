@@ -87,8 +87,17 @@ def parse_args() -> argparse.Namespace:
         help="从 csv 里取前 K 个 feature（<=0 表示全取）",
     )
     g_exp51.add_argument(
-        "--exp51_feature_coeff_scale",type=float,default=1.0,help="固定特征集合模式下，对这些特征的系数 c_i 统一乘一个缩放（默认 1.0）",)
-    g_exp51.add_argument("--concept_name",type=str,default="car",help="概念名（用于组织输出目录，例如 red；留空则不加这一层）")
+        "--exp51_feature_coeff_scale",
+        type=float,
+        default=1.0,
+        help="固定特征集合模式下，对这些特征的系数 c_i 统一乘一个缩放（默认 1.0）",
+    )
+    g_exp51.add_argument(
+        "--exp51_concept",
+        type=str,
+        default="car",
+        help="从 exp53 输出读取该概念的 top_positive_features.csv（按 block_short 分目录）",
+    )
 
     g_exp52.add_argument("--waterfall_max_features", type=int, default=1024, help="最多画多少特征")
     g_exp52.add_argument("--waterfall_norm", type=str, default="none", choices=["row", "global", "none"], help="归一化方式")
@@ -196,6 +205,7 @@ def build_configs(args: argparse.Namespace):
         delta_stride=args.delta_stride,
         overlay_alpha=args.overlay_alpha,
         exp51_feature_csv=str(args.exp51_feature_csv or ""),
+        exp51_concept=str(args.exp51_concept or ""),
         exp51_feature_k=int(args.exp51_feature_k),
         exp51_feature_coeff_scale=float(args.exp51_feature_coeff_scale),
         concept_name=str(args.concept_name or ""),

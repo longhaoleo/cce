@@ -24,7 +24,7 @@ import matplotlib.pyplot as plt
 import torch
 
 from ..configs import RunConfig, SAEConfig, VizConfig
-from ..utils import ensure_dir, normalize_01, overlay_heatmap, safe_name
+from ..utils import ensure_dir, normalize_01, overlay_heatmap, safe_name, block_short_name
 from .shared_prepare import StepDelta, prepare_deltas_for_blocks
 
 
@@ -205,7 +205,7 @@ def _run_fixed_features(
     *,
     output_dir: str,
     feature_ids: List[int],
-    concept_name: str,
+    feature_tag: str,
     delta_stride: int,
     overlay_alpha: float,
     base_image,
@@ -215,7 +215,8 @@ def _run_fixed_features(
     coeff_scale: float,
 ) -> None:
     """指定特征集合热图叠加（对每个 block 各自输出一组图）。"""
-    root = os.path.join(output_dir, concept_name)
+    tag = safe_name(str(feature_tag).strip() or "fixed")
+    root = os.path.join(output_dir, tag)
     ensure_dir(root)
     projector = SAEFeatureProjector()
     stride = max(1, int(delta_stride))
@@ -244,12 +245,12 @@ def _run_fixed_features(
             if (item.step_idx % stride) == 0:
                 out_png = os.path.join(
                     per_block_dir,
-                    f"step_{item.step_idx:04d}_t{int(item.timestep)}_fixed_{concept_name}_agg.png",
+                    f"step_{item.step_idx:04d}_t{int(item.timestep)}_fixed_{tag}_agg.png",
                 )
                 title = (
                     f"{block}\n"
                     f"step={item.step_idx} t={int(item.timestep)} "
-                    f"fixed={concept_name} top1=f{top1_id}({top1_val:.3f})"
+                    f"fixed={tag} top1=f{top1_id}({top1_val:.3f})"
                 )
                 overlay_heatmap(
                     heat_2d,
@@ -277,25 +278,59 @@ def run_exp51_feature_dynamics_topk(
     )
 
     fixed_csv = str(getattr(viz_cfg, "exp51_feature_csv", "") or "").strip()
+    exp51_concept = str(getattr(viz_cfg, "exp51_concept", "") or "").strip()
     if fixed_csv:
-        feature_ids = _load_feature_ids_from_csv(fixed_csv, k=int(getattr(viz_cfg, "exp51_feature_k", 0)))
-        concept_name = str(getattr(viz_cfg, "concept_name", "") or "").strip()
-        _run_fixed_features(
-            output_dir=viz_cfg.output_dir,
-            feature_ids=feature_ids,
-            concept_name=concept_name,
-            delta_stride=viz_cfg.delta_stride,
-            overlay_alpha=viz_cfg.overlay_alpha,
-            base_image=base_image,
-            blocks=blocks,
-            deltas_by_block=deltas_by_block,
-            saes=session.saes,
-            coeff_scale=float(getattr(viz_cfg, "exp51_feature_coeff_scale", 1.0)),
-        )
-        print(f"实验 51 完成（fixed features），输出目录: {viz_cfg.output_dir}")
-        print(f"  fixed_csv: {fixed_csv}")
-        print(f"  feature_ids[:10]: {feature_ids[:10]}")
-        return
+        try:
+            feature_ids = _load_feature_ids_from_csv(fixed_csv, k=int(getattr(viz_cfg, "exp51_feature_k", 0)))
+        except FileNotFoundError:
+            feature_ids = []
+        if feature_ids:
+            feature_tag = f"k{len(feature_ids)}"
+            _run_fixed_features(
+                output_dir=viz_cfg.output_dir,
+                feature_ids=feature_ids,
+                feature_tag=feature_tag,
+                delta_stride=viz_cfg.delta_stride,
+                overlay_alpha=viz_cfg.overlay_alpha,
+                base_image=base_image,
+                blocks=blocks,
+                deltas_by_block=deltas_by_block,
+                saes=session.saes,
+                coeff_scale=float(getattr(viz_cfg, "exp51_feature_coeff_scale", 1.0)),
+            )
+            print(f"实验 51 完成（fixed features），输出目录: {viz_cfg.output_dir}")
+            print(f"  fixed_csv: {fixed_csv}")
+            print(f"  feature_ids[:10]: {feature_ids[:10]}")
+            return
+        else:
+            print(f"[exp51] feature_csv 不存在或为空，回退到动态 top-k: {fixed_csv}")
+    elif exp51_concept:
+        any_run = False
+        for block in blocks:
+            block_tag = block_short_name(block)
+            csv_path = os.path.join(f"out_concept_dict_{block_tag}", exp51_concept, "top_positive_features.csv")
+            try:
+                feature_ids = _load_feature_ids_from_csv(csv_path, k=int(getattr(viz_cfg, "exp51_feature_k", 0)))
+            except FileNotFoundError:
+                print(f"[exp51] 找不到特征 csv，跳过 block={block}: {csv_path}")
+                continue
+            feature_tag = f"{exp51_concept}_k{len(feature_ids)}"
+            _run_fixed_features(
+                output_dir=viz_cfg.output_dir,
+                feature_ids=feature_ids,
+                feature_tag=feature_tag,
+                delta_stride=viz_cfg.delta_stride,
+                overlay_alpha=viz_cfg.overlay_alpha,
+                base_image=base_image,
+                blocks=[block],
+                deltas_by_block=deltas_by_block,
+                saes=session.saes,
+                coeff_scale=float(getattr(viz_cfg, "exp51_feature_coeff_scale", 1.0)),
+            )
+            any_run = True
+        if any_run:
+            print(f"实验 51 完成（fixed features for concept），输出目录: {viz_cfg.output_dir}")
+            return
 
     _run_topk(
         output_dir=viz_cfg.output_dir,
