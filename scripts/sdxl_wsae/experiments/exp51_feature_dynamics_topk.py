@@ -279,7 +279,7 @@ def run_exp51_feature_dynamics_topk(
     fixed_csv = str(getattr(viz_cfg, "exp51_feature_csv", "") or "").strip()
     if fixed_csv:
         feature_ids = _load_feature_ids_from_csv(fixed_csv, k=int(getattr(viz_cfg, "exp51_feature_k", 0)))
-        feature_tag = f"k{len(feature_ids)}"
+        feature_tag = str(getattr(viz_cfg, "exp51_feature_tag", "") or "").strip() or f"k{len(feature_ids)}"
         _run_fixed_features(
             output_dir=viz_cfg.output_dir,
             feature_ids=feature_ids,

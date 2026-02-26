@@ -92,6 +92,12 @@ def parse_args() -> argparse.Namespace:
         default=1.0,
         help="固定特征集合模式下，对这些特征的系数 c_i 统一乘一个缩放（默认 1.0）",
     )
+    g_exp51.add_argument(
+        "--exp51_feature_tag",
+        type=str,
+        default="",
+        help="固定特征集合模式的自定义标签（用于输出目录/文件名）",
+    )
     g_exp52.add_argument("--waterfall_max_features", type=int, default=1024, help="最多画多少特征")
     g_exp52.add_argument("--waterfall_norm", type=str, default="none", choices=["row", "global", "none"], help="归一化方式")
     g_exp52.add_argument("--waterfall_cmap", type=str, default="magma", help="colormap")
@@ -138,7 +144,7 @@ def parse_args() -> argparse.Namespace:
         help="从 rank_csv 取前 K 个特征",
     )
 
-    g_exp54.add_argument("--int_mode", type=str, default="injection", choices=["injection", "ablation"], help="injection 或 ablation")
+    g_exp54.add_argument("--int_mode", type=str, default="ablation", choices=["injection", "ablation"], help="injection 或 ablation")
     g_exp54.add_argument("--int_scale", type=float, default=1000, help="全局强度系数（公用 scale）")
     g_exp54.add_argument(
         "--int_spatial_mask",
@@ -200,6 +206,7 @@ def build_configs(args: argparse.Namespace):
         exp51_feature_csv=str(args.exp51_feature_csv or ""),
         exp51_feature_k=int(args.exp51_feature_k),
         exp51_feature_coeff_scale=float(args.exp51_feature_coeff_scale),
+        exp51_feature_tag=str(args.exp51_feature_tag or ""),
         waterfall_max_features=args.waterfall_max_features,
         waterfall_norm=args.waterfall_norm,
         waterfall_cmap=args.waterfall_cmap,
