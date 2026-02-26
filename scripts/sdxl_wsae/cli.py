@@ -208,7 +208,6 @@ def build_configs(args: argparse.Namespace):
         exp51_concept=str(args.exp51_concept or ""),
         exp51_feature_k=int(args.exp51_feature_k),
         exp51_feature_coeff_scale=float(args.exp51_feature_coeff_scale),
-        concept_name=str(args.concept_name or ""),
         waterfall_max_features=args.waterfall_max_features,
         waterfall_norm=args.waterfall_norm,
         waterfall_cmap=args.waterfall_cmap,
@@ -228,7 +227,6 @@ def build_configs(args: argparse.Namespace):
     block_tags = [block_short_name(b) for b in blocks]
     concept_cfg = ConceptLocateConfig(
         block=str(args.loc_block),
-        concept_name=str(args.concept_name),
         t_start=int(args.taris_t_start),
         t_end=int(args.taris_t_end),
         num_t_samples=int(args.taris_num_steps),
