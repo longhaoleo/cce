@@ -316,6 +316,10 @@ def build_feature_intervention_hook(
             "mean_abs_recon_final": 0.0,
             "mean_abs_delta_x": 0.0,
             "delta_over_x": 0.0,
+            "active_feature_ids_time": "",
+            "active_feature_ids_final": "",
+            "top_feature_ids_final": "",
+            "top_feature_scores_final": "",
         }
 
         if not _in_time_window(step_idx=step_idx, t_now=t_now, spec=spec):
@@ -403,7 +407,18 @@ def build_feature_intervention_hook(
             coeff = coeff * coeff_t.unsqueeze(0)  # [tokens, k]
         if coeff_t is not None:
             dbg["mean_abs_w_time"] = float(coeff_t.detach().abs().mean().item())
+            active_time_pos = (coeff_t.detach().abs() > 1e-12).nonzero(as_tuple=False).flatten().tolist()
+            dbg["active_feature_ids_time"] = " ".join(str(int(ids[p])) for p in active_time_pos)
         dbg["mean_abs_c_final"] = float(coeff.detach().abs().mean().item())
+        # 记录本步真正“有激活”的特征 index（按 token 平均绝对激活）
+        per_feat_abs = coeff.detach().abs().mean(dim=0)  # [k]
+        active_final_pos = (per_feat_abs > 1e-12).nonzero(as_tuple=False).flatten().tolist()
+        dbg["active_feature_ids_final"] = " ".join(str(int(ids[p])) for p in active_final_pos)
+        if int(per_feat_abs.numel()) > 0:
+            tk = min(5, int(per_feat_abs.numel()))
+            top_vals, top_pos = torch.topk(per_feat_abs, k=tk)
+            dbg["top_feature_ids_final"] = " ".join(str(int(ids[int(p.item())])) for p in top_pos)
+            dbg["top_feature_scores_final"] = " ".join(f"{float(v.item()):.6g}" for v in top_vals)
 
         # recon = sum_j (c_j * scale_j * d_j)
         # 即干预始终是 activation-dependent：
