@@ -303,7 +303,7 @@ def run_exp51_feature_dynamics_topk(
             return
 
         if not exp51_concept:
-            raise ValueError("[exp51] fixed 模式需要提供 --exp51_concept 或 --exp51_feature_csv。")
+            raise ValueError("[exp51] fixed 模式需要提供 --exp51_concept")
 
         missing = []
         for block in blocks:

@@ -75,15 +75,9 @@ def parse_args() -> argparse.Namespace:
     g_exp51.add_argument(
         "--exp51_mode",
         type=str,
-        default="dynamic",
+        default="fixed",
         choices=["dynamic", "fixed"],
         help="exp51 模式：dynamic=每步 top-k；fixed=读取固定特征集合",
-    )
-    g_exp51.add_argument(
-        "--exp51_feature_csv",
-        type=str,
-        default="",
-        help="指定特征集合的 csv 做可视化（例如 out_concept_dict_<block_short>/<concept>/top_positive_features.csv；留空则每步动态 top-k）",
     )
     g_exp51.add_argument(
         "--exp51_feature_k",
@@ -100,7 +94,7 @@ def parse_args() -> argparse.Namespace:
     g_exp51.add_argument(
         "--exp51_concept",
         type=str,
-        default="",
+        default="car",
         help="固定特征模式：按 exp53 目录规则自动读取该概念的 top_positive_features.csv（按 block_short 分目录）",
     )
 
@@ -210,7 +204,6 @@ def build_configs(args: argparse.Namespace):
         delta_stride=args.delta_stride,
         overlay_alpha=args.overlay_alpha,
         exp51_mode=str(args.exp51_mode),
-        exp51_feature_csv=str(args.exp51_feature_csv or ""),
         exp51_concept=str(args.exp51_concept or ""),
         exp51_feature_k=int(args.exp51_feature_k),
         exp51_feature_coeff_scale=float(args.exp51_feature_coeff_scale),
