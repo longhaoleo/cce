@@ -51,12 +51,8 @@ class VizConfig:
     sae_top_k: int = 10
     delta_stride: int = 1
     overlay_alpha: float = 0.75
-    # exp51：如果你想“可视化指定特征集合”，可以从 exp53 的 csv 读取 feature_id 列表。
-    # - feature_csv: 指向 `top_positive_features.csv`（或同格式的 csv）
-    # - feature_k:   从 csv 里取前 K 个（<=0 表示全取）
-    # 两者留空则走默认的“每步动态 top-k”逻辑。
+    # exp51：fixed 模式下按 concept 自动读取 exp53 的 top_positive_features.csv。
     exp51_mode: str = "dynamic"  # dynamic | fixed
-    exp51_feature_csv: str = ""
     exp51_feature_k: int = 0
     exp51_feature_coeff_scale: float = 1.0
     exp51_concept: str = ""

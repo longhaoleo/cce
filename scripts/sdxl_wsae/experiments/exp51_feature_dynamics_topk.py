@@ -278,32 +278,11 @@ def run_exp51_feature_dynamics_topk(
     )
 
     mode = str(getattr(viz_cfg, "exp51_mode", "dynamic")).strip().lower()
-    fixed_csv = str(getattr(viz_cfg, "exp51_feature_csv", "") or "").strip()
     exp51_concept = str(getattr(viz_cfg, "exp51_concept", "") or "").strip()
 
     if mode == "fixed":
-        if fixed_csv:
-            feature_ids = _load_feature_ids_from_csv(fixed_csv, k=int(getattr(viz_cfg, "exp51_feature_k", 0)))
-            feature_tag = f"k{len(feature_ids)}"
-            _run_fixed_features(
-                output_dir=viz_cfg.output_dir,
-                feature_ids=feature_ids,
-                feature_tag=feature_tag,
-                delta_stride=viz_cfg.delta_stride,
-                overlay_alpha=viz_cfg.overlay_alpha,
-                base_image=base_image,
-                blocks=blocks,
-                deltas_by_block=deltas_by_block,
-                saes=session.saes,
-                coeff_scale=float(getattr(viz_cfg, "exp51_feature_coeff_scale", 1.0)),
-            )
-            print(f"实验 51 完成（fixed features），输出目录: {viz_cfg.output_dir}")
-            print(f"  fixed_csv: {fixed_csv}")
-            print(f"  feature_ids[:10]: {feature_ids[:10]}")
-            return
-
         if not exp51_concept:
-            raise ValueError("[exp51] fixed 模式需要提供 --exp51_concept 或 --exp51_feature_csv。")
+            raise ValueError("[exp51] fixed 模式需要提供 --exp51_concept。")
 
         missing = []
         for block in blocks:
