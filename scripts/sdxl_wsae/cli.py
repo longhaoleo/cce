@@ -48,7 +48,7 @@ def parse_args() -> argparse.Namespace:
     g_main.add_argument(
         "--experiment",
         type=str,
-        default="exp54",
+        default="exp51",
         choices=list(SUPPORTED_EXPERIMENTS.keys()),
         help="实验编号",
     )
@@ -101,10 +101,10 @@ def parse_args() -> argparse.Namespace:
         nargs="+",
         type=str,
         default=[
-            # "unet.down_blocks.2.attentions.1",
-            # "unet.mid_block.attentions.0",
+            "unet.down_blocks.2.attentions.1",
+            "unet.mid_block.attentions.0",
             "unet.up_blocks.0.attentions.0",
-            # "unet.up_blocks.0.attentions.1",
+            "unet.up_blocks.0.attentions.1",
             ],
         help="exp51/exp54 用：可传多个 block（同时 hook）",
     )
@@ -128,7 +128,7 @@ def parse_args() -> argparse.Namespace:
     g_exp54.add_argument(
         "--targetconcept",
         type=str,
-        default="red",
+        default="car",
         help="概念名：将自动从 out_concept_dict_<block_short>/<targetconcept>/ 读取 csv",
     )
     g_exp54.add_argument(
