@@ -77,7 +77,7 @@ def parse_args() -> argparse.Namespace:
     g_exp51.add_argument(
         "--exp51_feature_csv",
         type=str,
-        default="",
+        default="top_positive_features.csv",
         help="指定特征集合的 csv 做可视化（例如 out_concept_dict_<block_short>/<concept>/top_positive_features.csv；留空则每步动态 top-k）",
     )
     g_exp51.add_argument(
@@ -87,17 +87,9 @@ def parse_args() -> argparse.Namespace:
         help="从 csv 里取前 K 个 feature（<=0 表示全取）",
     )
     g_exp51.add_argument(
-        "--exp51_feature_coeff_scale",
-        type=float,
-        default=1.0,
-        help="固定特征集合模式下，对这些特征的系数 c_i 统一乘一个缩放（默认 1.0）",
-    )
-    g_exp51.add_argument(
-        "--exp51_feature_tag",
-        type=str,
-        default="",
-        help="固定特征集合模式的自定义标签（用于输出目录/文件名）",
-    )
+        "--exp51_feature_coeff_scale",type=float,default=1.0,help="固定特征集合模式下，对这些特征的系数 c_i 统一乘一个缩放（默认 1.0）",)
+    g_exp51.add_argument("--concept_name",type=str,default="car",help="概念名（用于组织输出目录，例如 red；留空则不加这一层）")
+
     g_exp52.add_argument("--waterfall_max_features", type=int, default=1024, help="最多画多少特征")
     g_exp52.add_argument("--waterfall_norm", type=str, default="none", choices=["row", "global", "none"], help="归一化方式")
     g_exp52.add_argument("--waterfall_cmap", type=str, default="magma", help="colormap")
@@ -122,7 +114,7 @@ def parse_args() -> argparse.Namespace:
         # default="unet.mid_block.attentions.0",
         help="exp53 用：用于定位概念的 SAE block（仅一个）",
     )
-    g_exp53.add_argument("--concept_name",type=str,default="",help="概念名（用于组织输出目录，例如 red；留空则不加这一层）",)
+    g_exp53.add_argument("--exp53_concept_name",type=str,default="",help="概念名（用于组织输出目录，例如 red；留空则不加这一层）",)
     # exp53 改为从 `target_concept_dict/{concept_name}.json` 读取 prompts，
     g_exp53.add_argument("--taris_t_start", type=int, default=1000, help="时间窗口上界（高噪侧）")
     g_exp53.add_argument("--taris_t_end", type=int, default=0, help="时间窗口下界（低噪侧）")
@@ -159,15 +151,15 @@ def parse_args() -> argparse.Namespace:
         default=0.25,
         help="gaussian_center 的 sigma 相对尺度（sigma_px = sigma * min(H,W)）",
     )
-    g_exp54.add_argument("--int_t_start", type=int, default=800, help="main 窗口：t_start")
-    g_exp54.add_argument("--int_t_end", type=int, default=400, help="main 窗口：t_end")
+    g_exp54.add_argument("--int_t_start", type=int, default=850, help="main 窗口：t_start")
+    g_exp54.add_argument("--int_t_end", type=int, default=550, help="main 窗口：t_end")
     g_exp54.add_argument("--int_step_start", type=int, default=-1, help=">=0 时启用 step 下界（优先生效）")
     g_exp54.add_argument("--int_step_end", type=int, default=-1, help=">=0 时启用 step 上界（优先生效）")
     g_exp54.add_argument("--no_baseline", action="store_true", help="不跑 baseline（节省一半计算）")
 
     g_exp54_tw.add_argument("--early_start", type=int, default=1000, help="early 窗口 t_start")
-    g_exp54_tw.add_argument("--early_end", type=int, default=800, help="early 窗口 t_end")
-    g_exp54_tw.add_argument("--late_start", type=int, default=200, help="late 窗口 t_start")
+    g_exp54_tw.add_argument("--early_end", type=int, default=850, help="early 窗口 t_end")
+    g_exp54_tw.add_argument("--late_start", type=int, default=550, help="late 窗口 t_start")
     g_exp54_tw.add_argument("--late_end", type=int, default=0, help="late 窗口 t_end")
 
 
@@ -206,7 +198,7 @@ def build_configs(args: argparse.Namespace):
         exp51_feature_csv=str(args.exp51_feature_csv or ""),
         exp51_feature_k=int(args.exp51_feature_k),
         exp51_feature_coeff_scale=float(args.exp51_feature_coeff_scale),
-        exp51_feature_tag=str(args.exp51_feature_tag or ""),
+        concept_name=str(args.concept_name or ""),
         waterfall_max_features=args.waterfall_max_features,
         waterfall_norm=args.waterfall_norm,
         waterfall_cmap=args.waterfall_cmap,

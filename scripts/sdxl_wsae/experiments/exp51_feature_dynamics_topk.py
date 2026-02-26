@@ -205,7 +205,7 @@ def _run_fixed_features(
     *,
     output_dir: str,
     feature_ids: List[int],
-    feature_tag: str,
+    concept_name: str,
     delta_stride: int,
     overlay_alpha: float,
     base_image,
@@ -215,7 +215,7 @@ def _run_fixed_features(
     coeff_scale: float,
 ) -> None:
     """指定特征集合热图叠加（对每个 block 各自输出一组图）。"""
-    root = os.path.join(output_dir, f"exp51_fixed_{feature_tag}")
+    root = os.path.join(output_dir, concept_name)
     ensure_dir(root)
     projector = SAEFeatureProjector()
     stride = max(1, int(delta_stride))
@@ -244,12 +244,12 @@ def _run_fixed_features(
             if (item.step_idx % stride) == 0:
                 out_png = os.path.join(
                     per_block_dir,
-                    f"step_{item.step_idx:04d}_t{int(item.timestep)}_fixed_{feature_tag}_agg.png",
+                    f"step_{item.step_idx:04d}_t{int(item.timestep)}_fixed_{concept_name}_agg.png",
                 )
                 title = (
                     f"{block}\n"
                     f"step={item.step_idx} t={int(item.timestep)} "
-                    f"fixed={feature_tag} top1=f{top1_id}({top1_val:.3f})"
+                    f"fixed={concept_name} top1=f{top1_id}({top1_val:.3f})"
                 )
                 overlay_heatmap(
                     heat_2d,
@@ -279,11 +279,11 @@ def run_exp51_feature_dynamics_topk(
     fixed_csv = str(getattr(viz_cfg, "exp51_feature_csv", "") or "").strip()
     if fixed_csv:
         feature_ids = _load_feature_ids_from_csv(fixed_csv, k=int(getattr(viz_cfg, "exp51_feature_k", 0)))
-        feature_tag = str(getattr(viz_cfg, "exp51_feature_tag", "") or "").strip() or f"k{len(feature_ids)}"
+        concept_name = str(getattr(viz_cfg, "concept_name", "") or "").strip()
         _run_fixed_features(
             output_dir=viz_cfg.output_dir,
             feature_ids=feature_ids,
-            feature_tag=feature_tag,
+            concept_name=concept_name,
             delta_stride=viz_cfg.delta_stride,
             overlay_alpha=viz_cfg.overlay_alpha,
             base_image=base_image,

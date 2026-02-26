@@ -58,7 +58,7 @@ class VizConfig:
     exp51_feature_csv: str = ""
     exp51_feature_k: int = 0
     exp51_feature_coeff_scale: float = 1.0
-    exp51_feature_tag: str = ""
+    concept_name: str = ""
     waterfall_max_features: int = 1024
     waterfall_norm: str = "row"
     waterfall_cmap: str = "magma"
