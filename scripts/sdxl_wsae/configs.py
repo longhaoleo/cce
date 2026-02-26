@@ -70,14 +70,14 @@ class CausalInterventionConfig:
     feature_top_k: int = 0  # 从 rank_csv 里取前 K 个
     mode: str = "injection"  # injection | ablation
     scale: float = 1.0  # 全局强度系数（会乘到每个特征的 feature_scales 上）
+    use_time_weight: bool = True  # True: 在 from_x 的 c_i(x) 上乘 exp53 的按 step 时间权重；False: 仅 from_x
+    use_spatial_norm_weight: bool = False  # True: 乘空间范数归一化权重
     # 空间约束（可选）：打破“全图对称性”
     # - none: 不加 mask
     # - gaussian_center: 以中心为峰值的 2D 高斯 mask，边缘权重更小
     spatial_mask: str = "none"
     mask_sigma: float = 0.25  # sigma 的相对尺度（乘 min(H,W) 得到像素尺度）
-    # 系数来源：
-    # - from_x: 在推理时从当前 x 做 SAE.encode 得到 c_i(x)（默认）
-    # - from_csv: 从 exp53 导出的“按 step/t 的激活曲线 csv”读取，每个 step 使用预先统计的系数
+    # 时间权重 csv（exp53 导出的按 step 曲线），用于与 c_i(x) 相乘
     coeff_csv: str = ""  # out_concept_dict/<concept>/feature_time_scores.csv
     t_start: int = 600
     t_end: int = 200

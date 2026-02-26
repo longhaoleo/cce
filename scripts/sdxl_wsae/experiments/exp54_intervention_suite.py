@@ -43,15 +43,17 @@
 - injection: x <- x + scale * (c_i(x) * d_i)
 - ablation:  x <- x - scale * (c_i(x) * d_i)
 
-默认从 exp53 读取系数曲线（并自动选 top-k 特征）
+默认可从 exp53 读取时间权重曲线（并自动选 top-k 特征）
 ----------------------------
 如果你希望更细粒度地控制“在不同 t/step 注入多少”，需要：
 - `--int_coeff_csv out_concept_dict_<block_short>/<concept>/feature_time_scores.csv`
-特征来源改为：
+特征来源：
 - `--int_feature_top_k 10`
 默认从 coeff_csv 同目录自动读取 `top_positive_features.csv`。
 
-此时干预系数不再来自当前 x 的 encode，而是来自 exp53 统计的“按 step 的平均激活曲线”。
+此时最终系数是 `c_i(x) * w_i(step)`：
+- `c_i(x)` 来自当前 x 的 SAE.encode
+- `w_i(step)` 来自 exp53 统计的按 step 曲线
 """
 
 from __future__ import annotations
@@ -229,6 +231,7 @@ def run_exp54_causal_intervention(
 
     session = SDXLExperimentSession(model_cfg, sae_cfg)
     session.load_saes(blocks)
+    use_time_weight = bool(getattr(int_cfg, "use_time_weight", True))
 
     feats_by_block: Dict[str, Tuple[List[int], List[float]]] = {}
     coeffs_by_block: Dict[str, Dict[int, torch.Tensor]] = {}
@@ -239,9 +242,13 @@ def run_exp54_causal_intervention(
             feature_top_k=int(getattr(int_cfg, "feature_top_k", 0)),
         )
         base_dir = os.path.join(f"out_concept_dict_{block_short_name(block)}", str(getattr(int_cfg, "targetconcept", "")))
-        coeffs = _load_coeff_by_step_from_exp53_csv(
-            csv_path=os.path.join(base_dir, "feature_time_scores.csv"),
-            feature_ids=f_ids,
+        coeffs = (
+            _load_coeff_by_step_from_exp53_csv(
+                csv_path=os.path.join(base_dir, "feature_time_scores.csv"),
+                feature_ids=f_ids,
+            )
+            if use_time_weight
+            else {}
         )
         feats_by_block[block] = (f_ids, f_scales)
         coeffs_by_block[block] = coeffs
@@ -287,6 +294,8 @@ def run_exp54_causal_intervention(
             scale=float(int_cfg.scale),
             spatial_mask=str(getattr(int_cfg, "spatial_mask", "none")),
             mask_sigma=float(getattr(int_cfg, "mask_sigma", 0.25)),
+            use_spatial_norm_weight=bool(getattr(int_cfg, "use_spatial_norm_weight", False)),
+            coeff_source="from_csv" if use_time_weight else "from_x",
             coeff_by_step=coeffs_by_block[block],
             t_start=int(int_cfg.t_start),
             t_end=int(int_cfg.t_end),
@@ -359,6 +368,7 @@ def run_exp54_intervention_suite(
 
     session = SDXLExperimentSession(model_cfg, sae_cfg)
     session.load_saes(blocks)
+    use_time_weight = bool(getattr(int_cfg, "use_time_weight", True))
 
     feats_by_block: Dict[str, Tuple[List[int], List[float]]] = {}
     coeffs_by_block: Dict[str, Dict[int, torch.Tensor]] = {}
@@ -369,9 +379,13 @@ def run_exp54_intervention_suite(
             feature_top_k=int(getattr(int_cfg, "feature_top_k", 0)),
         )
         base_dir = os.path.join(f"out_concept_dict_{block_short_name(block)}", str(getattr(int_cfg, "targetconcept", "")))
-        coeffs = _load_coeff_by_step_from_exp53_csv(
-            csv_path=os.path.join(base_dir, "feature_time_scores.csv"),
-            feature_ids=f_ids,
+        coeffs = (
+            _load_coeff_by_step_from_exp53_csv(
+                csv_path=os.path.join(base_dir, "feature_time_scores.csv"),
+                feature_ids=f_ids,
+            )
+            if use_time_weight
+            else {}
         )
         feats_by_block[block] = (f_ids, f_scales)
         coeffs_by_block[block] = coeffs
@@ -417,6 +431,8 @@ def run_exp54_intervention_suite(
                 scale=float(int_cfg.scale),
                 spatial_mask=str(getattr(int_cfg, "spatial_mask", "none")),
                 mask_sigma=float(getattr(int_cfg, "mask_sigma", 0.25)),
+                use_spatial_norm_weight=bool(getattr(int_cfg, "use_spatial_norm_weight", False)),
+                coeff_source="from_csv" if use_time_weight else "from_x",
                 coeff_by_step=coeffs_by_block[block],
                 t_start=int(t_start),
                 t_end=int(t_end),

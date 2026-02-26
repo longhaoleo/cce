@@ -21,11 +21,12 @@ class InterventionSpec:
     # 空间约束：默认不启用，避免改变老实验行为
     spatial_mask: str = "none"  # none | gaussian_center
     mask_sigma: float = 0.25  # sigma 的相对尺度（sigma_px = sigma * min(H,W)）
+    use_spatial_norm_weight: bool = False  # 按 token 范数生成空间归一化权重
     # 系数来源：
-    # - from_x: 用 z=sae.encode(x) 得到 token 级系数 c_i(x)
-    # - from_csv: 用外部统计好的“按 step 的系数表”（来自 exp53 输出）
+    # - from_x: 仅使用 z=sae.encode(x) 得到 token 级系数 c_i(x)
+    # - from_csv: 在 from_x 的基础上再乘一个按 step 的时间权重 w_i(step)
     coeff_source: str = "from_x"  # from_x | from_csv
-    coeff_by_step: Dict[int, torch.Tensor] = field(default_factory=dict)  # step_idx -> [k] 系数（按 feature_ids 对齐）
+    coeff_by_step: Dict[int, torch.Tensor] = field(default_factory=dict)  # step_idx -> [k] 时间权重（按 feature_ids 对齐）
     step_start: Optional[int] = None
     step_end: Optional[int] = None
     apply_only_conditional: bool = True
@@ -98,6 +99,44 @@ def _maybe_apply_spatial_mask(
             if int(m.shape[0]) == int(recon.shape[0]):
                 return recon * m
         return recon
+
+    return recon
+
+
+def _maybe_apply_spatial_norm_weight(
+    *,
+    recon: torch.Tensor,  # [tokens, d_model]
+    flat: torch.Tensor,  # [tokens, d_model]，用于计算每个 token 的范数
+    meta: Tuple[str, int, int, int],
+    spec: InterventionSpec,
+) -> torch.Tensor:
+    """按 token 范数应用空间归一化权重（每个样本内归一化）。"""
+    if not bool(getattr(spec, "use_spatial_norm_weight", False)):
+        return recon
+
+    kind, a, b, c = meta
+    norms = torch.norm(flat.detach(), dim=1) + 1e-12  # [tokens]
+
+    if kind == "bchw":
+        bsz, h, w = int(a), int(b), int(c)
+        n = int(h * w)
+        if bsz <= 0 or n <= 0 or int(norms.numel()) != int(bsz * n):
+            return recon
+        x = norms.reshape(bsz, n)
+        x = x / (x.sum(dim=1, keepdim=True) + 1e-12)
+        x = x * float(n)  # 保持均值约为 1，避免整体强度显著下降
+        w_tok = x.reshape(bsz * n, 1)
+        return recon * w_tok
+
+    if kind == "bnc":
+        bsz, n = int(a), int(b)
+        if bsz <= 0 or n <= 0 or int(norms.numel()) != int(bsz * n):
+            return recon
+        x = norms.reshape(bsz, n)
+        x = x / (x.sum(dim=1, keepdim=True) + 1e-12)
+        x = x * float(n)
+        w_tok = x.reshape(bsz * n, 1)
+        return recon * w_tok
 
     return recon
 
@@ -221,7 +260,8 @@ def build_feature_intervention_hook(
     - injection: x <- x + scale * (c_i * d_i)
     - ablation:  x <- x - scale * (c_i * d_i)
 
-    其中 c_i 来自当前 step、当前 token 上对 x 的 SAE 编码 `z = sae.encode(x)`。
+    其中 c_i 来自当前 step、当前 token 上对 x 的 SAE 编码 `z = sae.encode(x)`；
+    若 coeff_source=from_csv，则再乘时间权重 w_i(step)，即 c_i <- c_i * w_i(step)。
     这样 injection/ablation 是严格对称的（只差一个符号），更像“沿特征方向加速/减速”。
     """
     mode = spec.mode.lower()
@@ -273,32 +313,25 @@ def build_feature_intervention_hook(
 
         g = float(spec.scale)  # 全局强度
 
-        # 系数来源：
-        # - from_x: 用 SAE.encode(flat) 得到 token 级 c_i(x)
-        # - from_csv: 用预先统计好的“按 step 的系数表”，对所有 token 使用同一组系数
+        # 基础系数永远来自当前 x（token 级 c_i(x)）
+        z = sae.encode(flat)  # [tokens, n_features]
+        coeff = z[:, ids]  # [tokens, k]
+
+        # 可选：叠加按 step 的时间权重（来自 exp53）
         src = str(spec.coeff_source).lower()
         if src == "from_csv":
-            # 约定：coeff_by_step 里的向量与 spec.feature_ids 的顺序一致（长度=len(feature_ids)）
             coeff_vec_full = spec.coeff_by_step.get(int(step_idx))
-            if coeff_vec_full is None:
-                return output
-            if int(coeff_vec_full.numel()) != len(feature_ids):
-                return output
-
-            fid_to_pos = {int(fid): i for i, fid in enumerate(feature_ids)}
-            pos = [fid_to_pos[int(fid)] for fid in ids if int(fid) in fid_to_pos]
-            if not pos:
-                return output
-
-            coeff_vec = coeff_vec_full.to(device=flat.device, dtype=flat.dtype)[pos]  # [k]
-            coeff = coeff_vec.unsqueeze(0).expand(int(flat.shape[0]), -1)  # [tokens, k]
-        else:
-            z = sae.encode(flat)  # [tokens, n_features]
-            coeff = z[:, ids]  # [tokens, k]
+            if coeff_vec_full is not None and int(coeff_vec_full.numel()) == len(feature_ids):
+                fid_to_pos = {int(fid): i for i, fid in enumerate(feature_ids)}
+                pos = [fid_to_pos[int(fid)] for fid in ids if int(fid) in fid_to_pos]
+                if pos:
+                    coeff_t = coeff_vec_full.to(device=flat.device, dtype=flat.dtype)[pos]  # [k]
+                    coeff = coeff * coeff_t.unsqueeze(0)  # [tokens, k]
 
         # recon = sum_j (c_j * scale_j * d_j)
         weighted = coeff * scales.unsqueeze(0)  # [tokens, k]
         recon = weighted @ dirs.t()  # [tokens, d_model]
+        recon = _maybe_apply_spatial_norm_weight(recon=recon, flat=flat, meta=meta, spec=spec)
         recon = _maybe_apply_spatial_mask(recon=recon, meta=meta, spec=spec)
 
         if mode == "injection":

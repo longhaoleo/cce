@@ -282,7 +282,11 @@ def run_exp51_feature_dynamics_topk(
 
     if mode == "fixed":
         if not exp51_concept:
+<<<<<<< HEAD
             raise ValueError("[exp51] fixed 模式需要提供 --exp51_concept。")
+=======
+            raise ValueError("[exp51] fixed 模式需要提供 --exp51_concept")
+>>>>>>> 7a9393d0c2a799565787a04011020dd912af631b
 
         missing = []
         for block in blocks:

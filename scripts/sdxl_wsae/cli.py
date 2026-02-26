@@ -46,7 +46,7 @@ def parse_args() -> argparse.Namespace:
     g_main.add_argument(
         "--experiment",
         type=str,
-        default="exp51",
+        default="exp54",
         choices=list(SUPPORTED_EXPERIMENTS.keys()),
         help="实验编号",
     )
@@ -75,7 +75,7 @@ def parse_args() -> argparse.Namespace:
     g_exp51.add_argument(
         "--exp51_mode",
         type=str,
-        default="dynamic",
+        default="fixed",
         choices=["dynamic", "fixed"],
         help="exp51 模式：dynamic=每步 top-k；fixed=读取固定特征集合",
     )
@@ -94,7 +94,7 @@ def parse_args() -> argparse.Namespace:
     g_exp51.add_argument(
         "--exp51_concept",
         type=str,
-        default="",
+        default="car",
         help="固定特征模式：按 exp53 目录规则自动读取该概念的 top_positive_features.csv（按 block_short 分目录）",
     )
 
@@ -145,7 +145,19 @@ def parse_args() -> argparse.Namespace:
     )
 
     g_exp54.add_argument("--int_mode", type=str, default="ablation", choices=["injection", "ablation"], help="injection 或 ablation")
-    g_exp54.add_argument("--int_scale", type=float, default=1000, help="全局强度系数（公用 scale）")
+    g_exp54.add_argument("--int_scale", type=float, default=10, help="全局强度系数（公用 scale）")
+    g_exp54.add_argument(
+        "--int_use_time_weight",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="是否启用时间权重（True=在 from_x 基础上乘 exp53 的 step 权重；False=仅 from_x）",
+    )
+    g_exp54.add_argument(
+        "--int_use_spatial_weight",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="是否启用空间归一化权重（按 token 范数归一化）",
+    )
     g_exp54.add_argument(
         "--int_spatial_mask",
         type=str,
@@ -153,6 +165,7 @@ def parse_args() -> argparse.Namespace:
         choices=["none", "gaussian_center"],
         help="空间 mask（打破全图对称性）：none 或 gaussian_center",
     )
+
     g_exp54.add_argument(
         "--int_mask_sigma",
         type=float,
@@ -239,6 +252,8 @@ def build_configs(args: argparse.Namespace):
         feature_top_k=int(args.int_feature_top_k),
         mode=args.int_mode,
         scale=float(args.int_scale),
+        use_time_weight=bool(args.int_use_time_weight),
+        use_spatial_norm_weight=bool(args.int_use_spatial_weight),
         spatial_mask=str(args.int_spatial_mask),
         mask_sigma=float(args.int_mask_sigma),
         coeff_csv="",  # 不再用单路径，改为在 exp54 内按 block 拼路径
