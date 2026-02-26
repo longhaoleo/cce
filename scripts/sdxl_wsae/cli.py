@@ -107,10 +107,10 @@ def parse_args() -> argparse.Namespace:
         nargs="+",
         type=str,
         default=[
-            "unet.down_blocks.2.attentions.1",
+            # "unet.down_blocks.2.attentions.1",
             "unet.mid_block.attentions.0",
-            "unet.up_blocks.0.attentions.0",
-            "unet.up_blocks.0.attentions.1",
+            # "unet.up_blocks.0.attentions.0",
+            # "unet.up_blocks.0.attentions.1",
             ],
         help="exp51/exp54 用：可传多个 block（同时 hook）",
     )
@@ -145,7 +145,7 @@ def parse_args() -> argparse.Namespace:
     )
 
     g_exp54.add_argument("--int_mode", type=str, default="ablation", choices=["injection", "ablation"], help="injection 或 ablation")
-    g_exp54.add_argument("--int_scale", type=float, default=10, help="全局强度系数（公用 scale）")
+    g_exp54.add_argument("--int_scale", type=float, default=5, help="全局强度系数（公用 scale）")
     g_exp54.add_argument(
         "--int_use_time_weight",
         action=argparse.BooleanOptionalAction,
@@ -155,7 +155,7 @@ def parse_args() -> argparse.Namespace:
     g_exp54.add_argument(
         "--int_use_spatial_weight",
         action=argparse.BooleanOptionalAction,
-        default=False,
+        default=True,
         help="是否启用空间归一化权重（按 token 范数归一化）",
     )
     g_exp54.add_argument(

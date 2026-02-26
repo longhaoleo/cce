@@ -86,6 +86,8 @@ def _maybe_apply_spatial_mask(
         m_hw = _gaussian_center_mask(h=h, w=w, sigma_frac=float(spec.mask_sigma), device=device, dtype=dtype)  # [h*w]
         if int(m_hw.numel()) != int(h * w) or int(recon.shape[0]) != int(bsz * h * w):
             return recon
+        # 归一化到均值约为 1：只做空间重分布，不额外改变全局强度
+        m_hw = m_hw / (m_hw.mean() + 1e-12)
         m = m_hw.repeat(bsz).unsqueeze(1)  # [tokens, 1]
         return recon * m
 
@@ -95,6 +97,7 @@ def _maybe_apply_spatial_mask(
         side = int(round(float(n) ** 0.5))
         if side > 0 and side * side == n:
             m_hw = _gaussian_center_mask(h=side, w=side, sigma_frac=float(spec.mask_sigma), device=device, dtype=dtype)
+            m_hw = m_hw / (m_hw.mean() + 1e-12)
             m = m_hw.repeat(bsz).unsqueeze(1)  # [tokens, 1]
             if int(m.shape[0]) == int(recon.shape[0]):
                 return recon * m
@@ -110,33 +113,45 @@ def _maybe_apply_spatial_norm_weight(
     meta: Tuple[str, int, int, int],
     spec: InterventionSpec,
 ) -> torch.Tensor:
-    """按 token 范数应用空间归一化权重（每个样本内归一化）。"""
+    """按 token 范数应用空间归一化权重（每个样本内归一化）。
+
+    设计目标：
+    - 改变“空间分布”（哪些 token 更强）
+    - 避免极端峰值导致图像崩溃（如整图发黑）
+    """
     if not bool(getattr(spec, "use_spatial_norm_weight", False)):
         return recon
 
     kind, a, b, c = meta
     norms = torch.norm(flat.detach(), dim=1) + 1e-12  # [tokens]
 
+    def _stable_spatial_weight(x_2d: torch.Tensor) -> torch.Tensor:
+        """把原始 norm 映射为稳定权重：压缩动态范围 + 限幅 + 均值归一。"""
+        # x_2d: [bsz, n]
+        x = x_2d / (x_2d.mean(dim=1, keepdim=True) + 1e-12)
+        x = torch.sqrt(torch.clamp(x, min=1e-12))  # 压缩长尾，避免尖峰
+        x = torch.clamp(x, min=0.5, max=2.0)  # 限制局部增强/抑制倍率
+        x = x / (x.mean(dim=1, keepdim=True) + 1e-12)  # 回到均值约 1
+        return x
+
     if kind == "bchw":
         bsz, h, w = int(a), int(b), int(c)
         n = int(h * w)
         if bsz <= 0 or n <= 0 or int(norms.numel()) != int(bsz * n):
             return recon
-        x = norms.reshape(bsz, n)
-        x = x / (x.sum(dim=1, keepdim=True) + 1e-12)
-        x = x * float(n)  # 保持均值约为 1，避免整体强度显著下降
-        w_tok = x.reshape(bsz * n, 1)
-        return recon * w_tok
+        x = _stable_spatial_weight(norms.reshape(bsz, n))
+        rec = recon.reshape(bsz, n, int(recon.shape[-1]))
+        rec_w = rec * x.unsqueeze(-1)
+        return rec_w.reshape(bsz * n, int(recon.shape[-1]))
 
     if kind == "bnc":
         bsz, n = int(a), int(b)
         if bsz <= 0 or n <= 0 or int(norms.numel()) != int(bsz * n):
             return recon
-        x = norms.reshape(bsz, n)
-        x = x / (x.sum(dim=1, keepdim=True) + 1e-12)
-        x = x * float(n)
-        w_tok = x.reshape(bsz * n, 1)
-        return recon * w_tok
+        x = _stable_spatial_weight(norms.reshape(bsz, n))
+        rec = recon.reshape(bsz, n, int(recon.shape[-1]))
+        rec_w = rec * x.unsqueeze(-1)
+        return rec_w.reshape(bsz * n, int(recon.shape[-1]))
 
     return recon
 
@@ -172,6 +187,15 @@ def _extract_tensor(output: Any) -> Tuple[torch.Tensor, bool]:
     if isinstance(output, torch.Tensor):
         return output, False
     raise ValueError("不支持的 output 类型，无法进行干预。")
+
+
+def _extract_input_tensor(input_obj: Any) -> Optional[torch.Tensor]:
+    """从 hook input 提取主张量（通常是 input[0]）。失败时返回 None。"""
+    if isinstance(input_obj, tuple) and len(input_obj) >= 1 and isinstance(input_obj[0], torch.Tensor):
+        return input_obj[0]
+    if isinstance(input_obj, torch.Tensor):
+        return input_obj
+    return None
 
 
 def _pack_tensor(tensor: torch.Tensor, is_tuple: bool):
@@ -290,6 +314,29 @@ def build_feature_intervention_hook(
         sl = _conditional_slice(out, spec.apply_only_conditional)
         selected = out[sl]
         flat, meta = _flatten_spatial(selected)
+        # 强制使用 delta_flat = out - in（与 exp53 的 delta 特征空间严格对齐）
+        flat_delta = None
+        in_tensor = _extract_input_tensor(input)
+        if in_tensor is None or in_tensor.dim() not in (3, 4):
+            raise RuntimeError(
+                f"[intervention] 无法提取 input tensor，不能构造 delta(out-in)。"
+                f" block={spec.block}, step_idx={step_idx}"
+            )
+        try:
+            in_sel = in_tensor[sl].to(device=selected.device, dtype=selected.dtype)
+            flat_in, meta_in = _flatten_spatial(in_sel)
+        except Exception as e:
+            raise RuntimeError(
+                f"[intervention] input 展平失败，不能构造 delta(out-in)。"
+                f" block={spec.block}, step_idx={step_idx}, err={e}"
+            ) from e
+        if meta_in != meta or flat_in.shape != flat.shape:
+            raise RuntimeError(
+                f"[intervention] input/output 形状不匹配，不能构造 delta(out-in)。"
+                f" block={spec.block}, step_idx={step_idx}, out_meta={meta}, in_meta={meta_in},"
+                f" out_shape={tuple(flat.shape)}, in_shape={tuple(flat_in.shape)}"
+            )
+        flat_delta = flat - flat_in
 
         d_model = int(getattr(sae, "d_model"))
         if int(flat.shape[-1]) != d_model:
@@ -313,8 +360,10 @@ def build_feature_intervention_hook(
 
         g = float(spec.scale)  # 全局强度
 
-        # 基础系数永远来自当前 x（token 级 c_i(x)）
-        z = sae.encode(flat)  # [tokens, n_features]
+        # 基础系数严格来自当前 delta（out-in），不允许回退到 out。
+        coeff_src = flat_delta
+        coeff_src = coeff_src.to(device=p.device, dtype=p.dtype)
+        z = sae.encode(coeff_src)  # [tokens, n_features]
         coeff = z[:, ids]  # [tokens, k]
 
         # 可选：叠加按 step 的时间权重（来自 exp53）
