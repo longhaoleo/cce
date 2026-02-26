@@ -58,7 +58,9 @@
 
 from __future__ import annotations
 
+import bisect
 import csv
+import math
 import os
 from typing import Dict, List, Tuple
 
@@ -179,6 +181,129 @@ def _load_coeff_by_step_from_exp53_csv(
     return out
 
 
+def _interpolate_coeff_by_step(
+    *,
+    coeff_by_step: Dict[int, torch.Tensor],
+    total_steps: int,
+) -> Dict[int, torch.Tensor]:
+    """把稀疏 step 系数插值为完整 0..total_steps-1（线性插值，边界用最近邻）。"""
+    if not coeff_by_step:
+        return {}
+    if total_steps <= 0:
+        return dict(coeff_by_step)
+
+    keys = sorted(int(k) for k in coeff_by_step.keys())
+    vecs = {int(k): coeff_by_step[int(k)].detach().float().cpu() for k in keys}
+    out: Dict[int, torch.Tensor] = {}
+    if len(keys) == 1:
+        v = vecs[keys[0]]
+        for s in range(int(total_steps)):
+            out[s] = v.clone()
+        return out
+
+    for s in range(int(total_steps)):
+        if s in vecs:
+            out[s] = vecs[s].clone()
+            continue
+        idx = bisect.bisect_left(keys, s)
+        if idx <= 0:
+            out[s] = vecs[keys[0]].clone()
+            continue
+        if idx >= len(keys):
+            out[s] = vecs[keys[-1]].clone()
+            continue
+        k0 = keys[idx - 1]
+        k1 = keys[idx]
+        v0 = vecs[k0]
+        v1 = vecs[k1]
+        if k1 == k0:
+            out[s] = v0.clone()
+            continue
+        a = float(s - k0) / float(k1 - k0)
+        out[s] = (1.0 - a) * v0 + a * v1
+    return out
+
+
+def _mean_abs_coeff_strength(coeff_by_step: Dict[int, torch.Tensor]) -> float:
+    """估计一个 block 的时间权重强度（用于多 block 自动平衡）。"""
+    if not coeff_by_step:
+        return 1.0
+    vals = []
+    for v in coeff_by_step.values():
+        try:
+            vals.append(float(v.detach().abs().mean().item()))
+        except Exception:
+            continue
+    if not vals:
+        return 1.0
+    return float(sum(vals) / len(vals))
+
+
+def _build_block_scale_map(
+    *,
+    blocks: List[str],
+    base_scale: float,
+    coeffs_by_block: Dict[str, Dict[int, torch.Tensor]],
+) -> Dict[str, float]:
+    """多 block 自动平衡：按时间权重强度做 block 间归一，并按 sqrt(N) 缩放总强度。"""
+    if not blocks:
+        return {}
+    if len(blocks) == 1:
+        return {blocks[0]: float(base_scale)}
+
+    strengths: Dict[str, float] = {}
+    for b in blocks:
+        strengths[b] = _mean_abs_coeff_strength(coeffs_by_block.get(b, {}))
+    target = float(sum(strengths.values()) / len(strengths))
+    multi_gain = 1.0 / math.sqrt(float(len(blocks)))
+
+    out: Dict[str, float] = {}
+    for b in blocks:
+        s = float(strengths[b])
+        bal = target / (s + 1e-12)
+        bal = float(max(0.5, min(2.0, bal)))  # 防止过度补偿
+        out[b] = float(base_scale) * multi_gain * bal
+    print(f"[exp54] 多 block 自动平衡: base_scale={base_scale}, multi_gain={multi_gain:.4f}")
+    for b in blocks:
+        print(f"[exp54]   block={b} strength={strengths[b]:.6f} scale={out[b]:.6f}")
+    return out
+
+
+def _save_hook_debug_csv(
+    *,
+    hooks: Dict[str, object],
+    out_dir: str,
+    tag: str,
+) -> None:
+    """导出 hook 每步诊断信息。"""
+    ensure_dir(out_dir)
+    for block, hk in hooks.items():
+        rows = getattr(hk, "debug_rows", None)
+        if not rows:
+            continue
+        out_csv = os.path.join(out_dir, f"diag_{tag}_{safe_name(block)}.csv")
+        fields = [
+            "step_idx",
+            "timestep",
+            "active",
+            "mode",
+            "scale",
+            "mean_abs_c_base",
+            "mean_abs_w_time",
+            "mean_abs_c_final",
+            "mean_abs_recon_pre_spatial",
+            "mean_abs_recon_final",
+            "mean_abs_delta_x",
+            "delta_over_x",
+        ]
+        with open(out_csv, "w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=fields)
+            w.writeheader()
+            for r in rows:
+                w.writerow({k: r.get(k, "") for k in fields})
+        print(f"[exp54] 诊断 CSV: {out_csv}")
+
+
 @torch.no_grad()
 def _feature_curve_from_cache(
     *,
@@ -232,6 +357,7 @@ def run_exp54_causal_intervention(
     session = SDXLExperimentSession(model_cfg, sae_cfg)
     session.load_saes(blocks)
     use_time_weight = bool(getattr(int_cfg, "use_time_weight", True))
+    total_steps = int(getattr(run_cfg, "num_inference_steps", 0))
 
     feats_by_block: Dict[str, Tuple[List[int], List[float]]] = {}
     coeffs_by_block: Dict[str, Dict[int, torch.Tensor]] = {}
@@ -242,16 +368,20 @@ def run_exp54_causal_intervention(
             feature_top_k=int(getattr(int_cfg, "feature_top_k", 0)),
         )
         base_dir = os.path.join(f"out_concept_dict_{block_short_name(block)}", str(getattr(int_cfg, "targetconcept", "")))
-        coeffs = (
-            _load_coeff_by_step_from_exp53_csv(
+        coeffs = {}
+        if use_time_weight:
+            coeffs_raw = _load_coeff_by_step_from_exp53_csv(
                 csv_path=os.path.join(base_dir, "feature_time_scores.csv"),
                 feature_ids=f_ids,
             )
-            if use_time_weight
-            else {}
-        )
+            coeffs = _interpolate_coeff_by_step(coeff_by_step=coeffs_raw, total_steps=total_steps)
         feats_by_block[block] = (f_ids, f_scales)
         coeffs_by_block[block] = coeffs
+    block_scale_map = _build_block_scale_map(
+        blocks=blocks,
+        base_scale=float(int_cfg.scale),
+        coeffs_by_block=coeffs_by_block,
+    )
 
     baseline_img = None
     baseline_curves: Dict[str, Tuple[List[int], List[int], List[float]]] = {}
@@ -291,7 +421,7 @@ def run_exp54_causal_intervention(
             feature_ids=tuple(f_ids),
             feature_scales=tuple(f_scales),
             mode=str(int_cfg.mode),
-            scale=float(int_cfg.scale),
+            scale=float(block_scale_map[block]),
             spatial_mask=str(getattr(int_cfg, "spatial_mask", "none")),
             mask_sigma=float(getattr(int_cfg, "mask_sigma", 0.25)),
             use_spatial_norm_weight=bool(getattr(int_cfg, "use_spatial_norm_weight", False)),
@@ -313,6 +443,7 @@ def run_exp54_causal_intervention(
         save_output=True,
         output_type="pil",
     )
+    _save_hook_debug_csv(hooks=hooks, out_dir=output_dir, tag="intervention")
     steered_img = extract_first_image(out_steer)
     if steered_img is not None:
         steered_path = os.path.join(output_dir, "intervention_steered.png")
@@ -369,6 +500,7 @@ def run_exp54_intervention_suite(
     session = SDXLExperimentSession(model_cfg, sae_cfg)
     session.load_saes(blocks)
     use_time_weight = bool(getattr(int_cfg, "use_time_weight", True))
+    total_steps = int(getattr(run_cfg, "num_inference_steps", 0))
 
     feats_by_block: Dict[str, Tuple[List[int], List[float]]] = {}
     coeffs_by_block: Dict[str, Dict[int, torch.Tensor]] = {}
@@ -379,16 +511,20 @@ def run_exp54_intervention_suite(
             feature_top_k=int(getattr(int_cfg, "feature_top_k", 0)),
         )
         base_dir = os.path.join(f"out_concept_dict_{block_short_name(block)}", str(getattr(int_cfg, "targetconcept", "")))
-        coeffs = (
-            _load_coeff_by_step_from_exp53_csv(
+        coeffs = {}
+        if use_time_weight:
+            coeffs_raw = _load_coeff_by_step_from_exp53_csv(
                 csv_path=os.path.join(base_dir, "feature_time_scores.csv"),
                 feature_ids=f_ids,
             )
-            if use_time_weight
-            else {}
-        )
+            coeffs = _interpolate_coeff_by_step(coeff_by_step=coeffs_raw, total_steps=total_steps)
         feats_by_block[block] = (f_ids, f_scales)
         coeffs_by_block[block] = coeffs
+    block_scale_map = _build_block_scale_map(
+        blocks=blocks,
+        base_scale=float(int_cfg.scale),
+        coeffs_by_block=coeffs_by_block,
+    )
 
     # baseline（可选）
     baseline_img = None
@@ -428,7 +564,7 @@ def run_exp54_intervention_suite(
                 feature_ids=tuple(f_ids),
                 feature_scales=tuple(f_scales),
                 mode=str(int_cfg.mode),
-                scale=float(int_cfg.scale),
+                scale=float(block_scale_map[block]),
                 spatial_mask=str(getattr(int_cfg, "spatial_mask", "none")),
                 mask_sigma=float(getattr(int_cfg, "mask_sigma", 0.25)),
                 use_spatial_norm_weight=bool(getattr(int_cfg, "use_spatial_norm_weight", False)),
@@ -450,6 +586,7 @@ def run_exp54_intervention_suite(
             save_output=True,
             output_type="pil",
         )
+        _save_hook_debug_csv(hooks=hooks, out_dir=root, tag=name)
         img = extract_first_image(out)
         if img is not None:
             pth = os.path.join(root, f"{name}.png")

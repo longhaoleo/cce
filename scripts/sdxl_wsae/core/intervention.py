@@ -280,7 +280,7 @@ def build_feature_intervention_hook(
     """
     构建可注册到 block 的前向 hook。
 
-    干预规则：
+    干预规则（均为“激活依赖”而非常数减法）：
     - injection: x <- x + scale * (c_i * d_i)
     - ablation:  x <- x - scale * (c_i * d_i)
 
@@ -292,7 +292,7 @@ def build_feature_intervention_hook(
     if mode not in {"injection", "ablation"}:
         raise ValueError(f"不支持的干预模式: {spec.mode}")
 
-    state = {"step": 0}
+    state = {"step": 0, "debug_rows": []}
     feature_ids, feature_scales = _resolve_feature_list(spec)
 
     def hook(module, input, output):
@@ -303,11 +303,27 @@ def build_feature_intervention_hook(
         if timesteps is not None and step_idx < len(timesteps):
             t_now = int(timesteps[step_idx])
         state["step"] += 1
+        dbg = {
+            "step_idx": int(step_idx),
+            "timestep": int(t_now),
+            "active": 0,
+            "mode": str(mode),
+            "scale": float(spec.scale),
+            "mean_abs_c_base": 0.0,
+            "mean_abs_w_time": 1.0,
+            "mean_abs_c_final": 0.0,
+            "mean_abs_recon_pre_spatial": 0.0,
+            "mean_abs_recon_final": 0.0,
+            "mean_abs_delta_x": 0.0,
+            "delta_over_x": 0.0,
+        }
 
         if not _in_time_window(step_idx=step_idx, t_now=t_now, spec=spec):
+            state["debug_rows"].append(dbg)
             return output
 
         if tensor_out.dim() not in (3, 4):
+            state["debug_rows"].append(dbg)
             return output
 
         out = tensor_out.clone()
@@ -365,31 +381,56 @@ def build_feature_intervention_hook(
         coeff_src = coeff_src.to(device=p.device, dtype=p.dtype)
         z = sae.encode(coeff_src)  # [tokens, n_features]
         coeff = z[:, ids]  # [tokens, k]
+        dbg["mean_abs_c_base"] = float(coeff.detach().abs().mean().item())
 
         # 可选：叠加按 step 的时间权重（来自 exp53）
         src = str(spec.coeff_source).lower()
+        coeff_t = None
         if src == "from_csv":
+            # 严格模式：只在 CSV 里“出现”的 step/feature 生效，其他全部置 0
+            # 这样可避免“CSV 未覆盖区域”仍然发生干预。
+            if not spec.coeff_by_step:
+                raise RuntimeError(
+                    f"[intervention] coeff_source=from_csv 但 coeff_by_step 为空。block={spec.block}"
+                )
+            coeff_t = torch.zeros(len(ids), device=flat.device, dtype=flat.dtype)  # [k]
             coeff_vec_full = spec.coeff_by_step.get(int(step_idx))
             if coeff_vec_full is not None and int(coeff_vec_full.numel()) == len(feature_ids):
                 fid_to_pos = {int(fid): i for i, fid in enumerate(feature_ids)}
                 pos = [fid_to_pos[int(fid)] for fid in ids if int(fid) in fid_to_pos]
                 if pos:
                     coeff_t = coeff_vec_full.to(device=flat.device, dtype=flat.dtype)[pos]  # [k]
-                    coeff = coeff * coeff_t.unsqueeze(0)  # [tokens, k]
+            coeff = coeff * coeff_t.unsqueeze(0)  # [tokens, k]
+        if coeff_t is not None:
+            dbg["mean_abs_w_time"] = float(coeff_t.detach().abs().mean().item())
+        dbg["mean_abs_c_final"] = float(coeff.detach().abs().mean().item())
 
         # recon = sum_j (c_j * scale_j * d_j)
+        # 即干预始终是 activation-dependent：
+        # x_new = x + beta * f_c(x) * W_dec,c
+        # 这里 beta 对应 mode 与全局 scale（injection:+g, ablation:-g）。
         weighted = coeff * scales.unsqueeze(0)  # [tokens, k]
         recon = weighted @ dirs.t()  # [tokens, d_model]
+        dbg["mean_abs_recon_pre_spatial"] = float(recon.detach().abs().mean().item())
         recon = _maybe_apply_spatial_norm_weight(recon=recon, flat=flat, meta=meta, spec=spec)
         recon = _maybe_apply_spatial_mask(recon=recon, meta=meta, spec=spec)
+        dbg["mean_abs_recon_final"] = float(recon.detach().abs().mean().item())
 
         if mode == "injection":
             flat_new = flat + g * recon
         else:
             flat_new = flat - g * recon
+        mean_abs_delta = float((g * recon).detach().abs().mean().item())
+        mean_abs_x = float(flat.detach().abs().mean().item())
+        dbg["mean_abs_delta_x"] = mean_abs_delta
+        dbg["delta_over_x"] = float(mean_abs_delta / (mean_abs_x + 1e-12))
+        dbg["active"] = 1
+        state["debug_rows"].append(dbg)
 
         selected_new = _unflatten_spatial(flat_new.to(dtype=selected.dtype, device=selected.device), meta)
         out[sl] = selected_new
         return _pack_tensor(out, is_tuple)
 
+    # 暴露调试信息，供 exp54 写出每步诊断 CSV
+    hook.debug_rows = state["debug_rows"]  # type: ignore[attr-defined]
     return hook
