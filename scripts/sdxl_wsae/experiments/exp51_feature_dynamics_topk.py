@@ -277,14 +277,13 @@ def run_exp51_feature_dynamics_topk(
         blocks=blocks,
     )
 
+    mode = str(getattr(viz_cfg, "exp51_mode", "dynamic")).strip().lower()
     fixed_csv = str(getattr(viz_cfg, "exp51_feature_csv", "") or "").strip()
     exp51_concept = str(getattr(viz_cfg, "exp51_concept", "") or "").strip()
-    if fixed_csv:
-        try:
+
+    if mode == "fixed":
+        if fixed_csv:
             feature_ids = _load_feature_ids_from_csv(fixed_csv, k=int(getattr(viz_cfg, "exp51_feature_k", 0)))
-        except FileNotFoundError:
-            feature_ids = []
-        if feature_ids:
             feature_tag = f"k{len(feature_ids)}"
             _run_fixed_features(
                 output_dir=viz_cfg.output_dir,
@@ -302,18 +301,18 @@ def run_exp51_feature_dynamics_topk(
             print(f"  fixed_csv: {fixed_csv}")
             print(f"  feature_ids[:10]: {feature_ids[:10]}")
             return
-        else:
-            print(f"[exp51] feature_csv 不存在或为空，回退到动态 top-k: {fixed_csv}")
-    elif exp51_concept:
-        any_run = False
+
+        if not exp51_concept:
+            raise ValueError("[exp51] fixed 模式需要提供 --exp51_concept 或 --exp51_feature_csv。")
+
+        missing = []
         for block in blocks:
             block_tag = block_short_name(block)
             csv_path = os.path.join(f"out_concept_dict_{block_tag}", exp51_concept, "top_positive_features.csv")
-            try:
-                feature_ids = _load_feature_ids_from_csv(csv_path, k=int(getattr(viz_cfg, "exp51_feature_k", 0)))
-            except FileNotFoundError:
-                print(f"[exp51] 找不到特征 csv，跳过 block={block}: {csv_path}")
+            if not os.path.exists(csv_path):
+                missing.append((block, csv_path))
                 continue
+            feature_ids = _load_feature_ids_from_csv(csv_path, k=int(getattr(viz_cfg, "exp51_feature_k", 0)))
             feature_tag = f"{exp51_concept}_k{len(feature_ids)}"
             _run_fixed_features(
                 output_dir=viz_cfg.output_dir,
@@ -327,10 +326,14 @@ def run_exp51_feature_dynamics_topk(
                 saes=session.saes,
                 coeff_scale=float(getattr(viz_cfg, "exp51_feature_coeff_scale", 1.0)),
             )
-            any_run = True
-        if any_run:
-            print(f"实验 51 完成（fixed features for concept），输出目录: {viz_cfg.output_dir}")
-            return
+        if missing:
+            msg = "; ".join([f"{b} -> {p}" for b, p in missing])
+            raise FileNotFoundError(f"[exp51] 缺少概念 CSV（请先跑 exp53）：{msg}")
+        print(f"实验 51 完成（fixed features for concept），输出目录: {viz_cfg.output_dir}")
+        return
+
+    if mode != "dynamic":
+        raise ValueError(f"[exp51] 不支持的 exp51_mode: {mode}")
 
     _run_topk(
         output_dir=viz_cfg.output_dir,

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 from email.policy import default
-import os
 from .configs import (
     CausalInterventionConfig,
     ConceptLocateConfig,
@@ -17,7 +16,6 @@ from .configs import (
 from .experiments.registry import SUPPORTED_EXPERIMENTS, run_experiment
 from .experiments.exp07_clip_alignment import ClipEvalConfig
 from .configs import TemporalWindowConfig
-from .utils import block_short_name, safe_name
 
 
 def parse_args() -> argparse.Namespace:
@@ -75,9 +73,16 @@ def parse_args() -> argparse.Namespace:
     g_exp51.add_argument("--delta_stride", type=int, default=1, help="每隔多少 step 保存一张叠加图")
     g_exp51.add_argument("--overlay_alpha", type=float, default=0.75, help="叠加透明度")
     g_exp51.add_argument(
+        "--exp51_mode",
+        type=str,
+        default="dynamic",
+        choices=["dynamic", "fixed"],
+        help="exp51 模式：dynamic=每步 top-k；fixed=读取固定特征集合",
+    )
+    g_exp51.add_argument(
         "--exp51_feature_csv",
         type=str,
-        default="top_positive_features.csv",
+        default="",
         help="指定特征集合的 csv 做可视化（例如 out_concept_dict_<block_short>/<concept>/top_positive_features.csv；留空则每步动态 top-k）",
     )
     g_exp51.add_argument(
@@ -95,8 +100,8 @@ def parse_args() -> argparse.Namespace:
     g_exp51.add_argument(
         "--exp51_concept",
         type=str,
-        default="car",
-        help="从 exp53 输出读取该概念的 top_positive_features.csv（按 block_short 分目录）",
+        default="",
+        help="固定特征模式：按 exp53 目录规则自动读取该概念的 top_positive_features.csv（按 block_short 分目录）",
     )
 
     g_exp52.add_argument("--waterfall_max_features", type=int, default=1024, help="最多画多少特征")
@@ -204,6 +209,7 @@ def build_configs(args: argparse.Namespace):
         sae_top_k=args.sae_top_k,
         delta_stride=args.delta_stride,
         overlay_alpha=args.overlay_alpha,
+        exp51_mode=str(args.exp51_mode),
         exp51_feature_csv=str(args.exp51_feature_csv or ""),
         exp51_concept=str(args.exp51_concept or ""),
         exp51_feature_k=int(args.exp51_feature_k),
@@ -219,28 +225,20 @@ def build_configs(args: argparse.Namespace):
     # 约定：<0 表示“禁用该 step 边界”
     step_start = None if int(args.int_step_start) < 0 else int(args.int_step_start)
     step_end = None if int(args.int_step_end) < 0 else int(args.int_step_end)
-    # 从 out_concept_dict_<block_short>/<concept>/ 取 csv
-    targetconcept = str(getattr(args, "targetconcept", "") or "").strip()
-    if not targetconcept:
-        raise ValueError("--targetconcept 不能为空。")
     blocks = [str(b) for b in args.blocks]
-    block_tags = [block_short_name(b) for b in blocks]
     concept_cfg = ConceptLocateConfig(
         block=str(args.loc_block),
+        concept_name=str(getattr(args, "exp53_concept_name", "") or ""),
         t_start=int(args.taris_t_start),
         t_end=int(args.taris_t_end),
         num_t_samples=int(args.taris_num_steps),
         delta=float(args.taris_delta),
         top_k=int(args.taris_top_k),
     )
-    # exp54: 构建每个 block 的 coeff 路径（基于 targetconcept）
+
     targetconcept = str(getattr(args, "targetconcept", "") or "").strip()
     if not targetconcept:
         raise ValueError("--targetconcept 不能为空。")
-    coeff_csvs = {
-        b: os.path.join(f"out_concept_dict_{tag}", targetconcept, "feature_time_scores.csv")
-        for b, tag in zip(blocks, block_tags)
-    }
 
     int_cfg = CausalInterventionConfig(
         blocks=tuple(blocks),

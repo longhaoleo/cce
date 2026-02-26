@@ -55,6 +55,7 @@ class VizConfig:
     # - feature_csv: 指向 `top_positive_features.csv`（或同格式的 csv）
     # - feature_k:   从 csv 里取前 K 个（<=0 表示全取）
     # 两者留空则走默认的“每步动态 top-k”逻辑。
+    exp51_mode: str = "dynamic"  # dynamic | fixed
     exp51_feature_csv: str = ""
     exp51_feature_k: int = 0
     exp51_feature_coeff_scale: float = 1.0
