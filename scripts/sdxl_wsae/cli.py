@@ -58,7 +58,8 @@ def parse_args() -> argparse.Namespace:
 
     # g_main.add_argument("--prompt", type=str, default="a child hold kitchen knife on the table, scary lighting.")
     # g_main.add_argument("--prompt", type=str, default="a empty street, sunny day.")
-    g_main.add_argument("--prompt", type=str, default="a car in the street, sunny day.")
+    g_main.add_argument("--prompt", type=str, default="a empty countryside road.")
+    # g_main.add_argument("--prompt", type=str, default="a car in the street, sunny day.")
     g_main.add_argument("--steps", type=int, default=30)
     g_main.add_argument("--guidance_scale", type=float, default=8.0)
     g_main.add_argument("--seed", type=int, default=42)
@@ -94,7 +95,7 @@ def parse_args() -> argparse.Namespace:
     g_exp51.add_argument(
         "--exp51_concept",
         type=str,
-        default="car",
+        default="red",
         help="固定特征模式：按 exp53 目录规则自动读取该概念的 top_positive_features.csv（按 block_short 分目录）",
     )
 
@@ -107,10 +108,10 @@ def parse_args() -> argparse.Namespace:
         nargs="+",
         type=str,
         default=[
-            # "unet.down_blocks.2.attentions.1",
+            "unet.down_blocks.2.attentions.1",
             "unet.mid_block.attentions.0",
-            # "unet.up_blocks.0.attentions.0",
-            # "unet.up_blocks.0.attentions.1",
+            "unet.up_blocks.0.attentions.0",
+            "unet.up_blocks.0.attentions.1",
             ],
         help="exp51/exp54 用：可传多个 block（同时 hook）",
     )
@@ -134,7 +135,7 @@ def parse_args() -> argparse.Namespace:
     g_exp54.add_argument(
         "--targetconcept",
         type=str,
-        default="car",
+        default="red",
         help="概念名：将自动从 out_concept_dict_<block_short>/<targetconcept>/ 读取 csv",
     )
     g_exp54.add_argument(
@@ -144,8 +145,8 @@ def parse_args() -> argparse.Namespace:
         help="从 rank_csv 取前 K 个特征",
     )
 
-    g_exp54.add_argument("--int_mode", type=str, default="ablation", choices=["injection", "ablation"], help="injection 或 ablation")
-    g_exp54.add_argument("--int_scale", type=float, default=5, help="全局强度系数（公用 scale）")
+    g_exp54.add_argument("--int_mode", type=str, default="injection", choices=["injection", "ablation"], help="injection 或 ablation")
+    g_exp54.add_argument("--int_scale", type=float, default=10, help="全局强度系数（公用 scale）")
     g_exp54.add_argument(
         "--int_use_time_weight",
         action=argparse.BooleanOptionalAction,
