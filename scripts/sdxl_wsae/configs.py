@@ -105,5 +105,34 @@ class TemporalWindowConfig:
 
     early_start: int = 1000
     early_end: int = 800
+    mid_start: int = 800
+    mid_end: int = 400
     late_start: int = 200
     late_end: int = 0
+
+
+@dataclass
+class Exp55Config:
+    """实验 55：真实图像概念定位验刀（Noisy Latent Probe）配置。"""
+
+    image_root: str = ""
+    block: str = "unet.mid_block.attentions.0"
+    concept_name: str = ""
+    feature_top_k: int = 1
+    noise_t: int = 700
+    t_start: int = 700
+    t_end: int = 700
+    num_t_samples: int = 1
+    t_aggregate: str = "freq"  # freq | mean
+    write_blacklist: bool = True
+    blacklist_freq_threshold: float = 0.99
+    blacklist_eps: float = 1e-6
+    blacklist_filename: str = "feature_blacklist.txt"
+    max_images: int = 1500
+    top_n: int = 20
+    resolution: int = 1024
+    pooling: str = "max"  # max | topk_mean
+    pool_topk: int = 16
+    overlay_alpha: float = 0.55
+    dataset_seed: int = 42
+    recursive: bool = True

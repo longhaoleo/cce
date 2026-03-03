@@ -9,8 +9,8 @@
 4) 输出生成图 + 该特征随时间的曲线
 
 因此这里把它们合并成一个入口 exp54：
-- main 干预：使用 int_cfg.mode + int_cfg.t_start/t_end（等价于原 exp04）
-- early/late 干预：仅当 main 的 mode 是 injection 时运行，窗口来自 tw_cfg
+- custom 干预：使用 int_cfg.mode + int_cfg.t_start/t_end（自定义窗口）
+- early/mid/late 干预：窗口来自 tw_cfg
 
 本文件同时提供一个“单窗口 baseline vs steered”的子实验函数：
 - `run_exp54_causal_intervention(...)`
@@ -18,14 +18,14 @@
 
 输入参数来源（均已在 CLI 里存在）：
 - int_cfg: 通过 --int_block/--int_feature_top_k/--int_feature_rank_csv/--int_mode/--int_scale/--int_t_start/--int_t_end/... 指定
-- tw_cfg: 通过 --early_start/--early_end/--late_start/--late_end 指定
+- tw_cfg: 通过 --early_start/--early_end/--mid_start/--mid_end/--late_start/--late_end 指定
 
 输出目录
 --------
 输出到 `output_dir/exp54_intervention_suite/`：
 - baseline.png（若启用 baseline）
-- main_injection.png 或 main_ablation.png
-- early_{mode}.png / late_{mode}.png（mode=injection/ablation）
+- custom_{mode}.png
+- early_{mode}.png / mid_{mode}.png / late_{mode}.png（mode=injection/ablation）
 - compare_*.png（把可用的图片横向拼接，便于快速肉眼对比）
 - suite_curve_{block}_f{feature}.csv
 - suite_curve_{block}_f{feature}.png
@@ -103,6 +103,38 @@ def _load_topk_feature_ids(csv_path: str, k: int) -> List[int]:
     return [fid for fid, _ in rows[:k]]
 
 
+def _load_blacklist_ids(path: str) -> set[int]:
+    """读取黑名单 id（支持 txt/csv）。"""
+    ids: set[int] = set()
+    p = os.path.expanduser(str(path))
+    if not os.path.exists(p):
+        return ids
+    try:
+        if p.endswith(".csv"):
+            with open(p, "r", encoding="utf-8") as f:
+                r = csv.DictReader(f)
+                if r.fieldnames and "feature_id" in r.fieldnames:
+                    for row in r:
+                        try:
+                            ids.add(int(row["feature_id"]))
+                        except Exception:
+                            continue
+                    return ids
+        with open(p, "r", encoding="utf-8") as f:
+            for line in f:
+                s = line.strip()
+                if not s or s.startswith("#"):
+                    continue
+                s = s.split(",")[0].strip()
+                try:
+                    ids.add(int(s))
+                except Exception:
+                    continue
+    except Exception:
+        return ids
+    return ids
+
+
 def _resolve_feature_ids_and_scales(
     *,
     block: str,
@@ -114,6 +146,13 @@ def _resolve_feature_ids_and_scales(
     base_dir = os.path.join(f"out_concept_dict_{block_tag}", targetconcept)
     rank_csv = os.path.join(base_dir, "top_positive_features.csv")
     feature_ids = _load_topk_feature_ids(rank_csv, int(feature_top_k))
+    # 自动过滤概念目录中的黑名单（由 exp55 产出/维护）
+    bl_path = os.path.join(base_dir, "feature_blacklist.txt")
+    bl_ids = _load_blacklist_ids(bl_path)
+    if bl_ids:
+        before = len(feature_ids)
+        feature_ids = [int(fid) for fid in feature_ids if int(fid) not in bl_ids]
+        print(f"[exp54] block={block} 黑名单过滤: {before} -> {len(feature_ids)} (blacklist={len(bl_ids)})")
 
     if not feature_ids:
         raise ValueError("feature_ids 为空，无法从 rank_csv 获取 top-k。")
@@ -492,7 +531,7 @@ def run_exp54_intervention_suite(
     tw_cfg: TemporalWindowConfig,
     output_dir: str,
 ) -> None:
-    """执行 exp54：baseline + main + early/late，对多个 block 同时干预。"""
+    """执行 exp54：baseline + early/mid/late + custom，对多个 block 同时干预。"""
     ensure_dir(output_dir)
     root = os.path.join(output_dir, "exp54_intervention_suite")
     ensure_dir(root)
@@ -611,19 +650,22 @@ def run_exp54_intervention_suite(
             )
         return img, curves
 
-    main_img, main_curves = _run_one("main" + f"_{int_cfg.mode}", int_cfg.t_start, int_cfg.t_end)
+    custom_img, custom_curves = _run_one("custom" + f"_{int_cfg.mode}", int_cfg.t_start, int_cfg.t_end)
     early_img, early_curves = _run_one("early" + f"_{int_cfg.mode}", tw_cfg.early_start, tw_cfg.early_end)
+    mid_img, mid_curves = _run_one("mid" + f"_{int_cfg.mode}", tw_cfg.mid_start, tw_cfg.mid_end)
     late_img, late_curves = _run_one("late" + f"_{int_cfg.mode}", tw_cfg.late_start, tw_cfg.late_end)
 
     compare_imgs = []
     if baseline_img is not None:
         compare_imgs.append(("baseline", baseline_img))
-    if main_img is not None:
-        compare_imgs.append(("main", main_img))
     if early_img is not None:
         compare_imgs.append(("early", early_img))
+    if mid_img is not None:
+        compare_imgs.append(("mid", mid_img))
     if late_img is not None:
         compare_imgs.append(("late", late_img))
+    if custom_img is not None:
+        compare_imgs.append(("custom", custom_img))
     if len(compare_imgs) >= 2:
         concat = _concat_images_h([im for _, im in compare_imgs])
         tags = "_".join(tag for tag, _ in compare_imgs)
@@ -631,26 +673,29 @@ def run_exp54_intervention_suite(
         concat.save(out_path)
         print(f"已保存拼接对比图: {out_path}")
 
-    # 导出曲线：每个 block 一份 CSV，包含 baseline/main/early/late
+    # 导出曲线：每个 block 一份 CSV，包含 baseline/early/mid/late/custom
     for block in blocks:
         csv_path = os.path.join(root, f"suite_curve_{safe_name(block)}.csv")
         with open(csv_path, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
-            writer.writerow(["step_idx", "timestep", "baseline", "main", "early", "late"])
-            steps_main, ts_main, vals_main = main_curves[block]
+            writer.writerow(["step_idx", "timestep", "baseline", "early", "mid", "late", "custom"])
+            steps_ref, ts_ref, _ = custom_curves[block]
             steps_base, ts_base, vals_base = baseline_curves.get(block, ([], [], []))
             steps_early, ts_early, vals_early = early_curves.get(block, ([], [], []))
+            steps_mid, ts_mid, vals_mid = mid_curves.get(block, ([], [], []))
             steps_late, ts_late, vals_late = late_curves.get(block, ([], [], []))
-            n = len(steps_main)
+            steps_custom, ts_custom, vals_custom = custom_curves.get(block, ([], [], []))
+            n = len(steps_ref)
             for i in range(n):
                 writer.writerow(
                     [
-                        steps_main[i],
-                        ts_main[i],
+                        steps_ref[i],
+                        ts_ref[i],
                         vals_base[i] if vals_base else "",
-                        vals_main[i],
                         vals_early[i] if vals_early else "",
+                        vals_mid[i] if vals_mid else "",
                         vals_late[i] if vals_late else "",
+                        vals_custom[i] if vals_custom else "",
                     ]
                 )
         print(f"已保存曲线: {csv_path}")

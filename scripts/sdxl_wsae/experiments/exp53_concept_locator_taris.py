@@ -36,6 +36,38 @@ from ..utils import ensure_dir, safe_name, block_short_name
 from .shared_prepare import DeltaExtractor
 
 
+def _load_blacklist_ids(path: str) -> set[int]:
+    """读取黑名单 id（支持 txt/csv）。"""
+    ids: set[int] = set()
+    p = os.path.expanduser(str(path))
+    if not os.path.exists(p):
+        return ids
+    try:
+        if p.endswith(".csv"):
+            with open(p, "r", encoding="utf-8") as f:
+                r = csv.DictReader(f)
+                if r.fieldnames and "feature_id" in r.fieldnames:
+                    for row in r:
+                        try:
+                            ids.add(int(row["feature_id"]))
+                        except Exception:
+                            continue
+                    return ids
+        with open(p, "r", encoding="utf-8") as f:
+            for line in f:
+                s = line.strip()
+                if not s or s.startswith("#"):
+                    continue
+                s = s.split(",")[0].strip()
+                try:
+                    ids.add(int(s))
+                except Exception:
+                    continue
+    except Exception:
+        return ids
+    return ids
+
+
 def _load_concept_prompts_from_json(*, concept_name: str) -> Tuple[List[str], List[str], Dict[str, Any]]:
     """从 `target_concept_dict/{concept_name}.json` 读取正/负 prompts。
 
@@ -212,9 +244,13 @@ def _taris_score(
     for idx in step_indices:
         mu_c = pos_mu[int(idx)]
         mu_nc = neg_mu[int(idx)]
+        # 分母归一化（Denominator Normalization）：
+        # 把“绝对激活值”转为“相对占比”，抑制全局高能但低语义的特征。
         e_c = float(mu_c.sum().item()) + d
         e_nc = float(mu_nc.sum().item()) + d
-        score_t = (mu_c / e_c) - (mu_nc / e_nc)
+        mu_c_norm = mu_c / e_c
+        mu_nc_norm = mu_nc / e_nc
+        score_t = mu_c_norm - mu_nc_norm
         scores += score_t
     return scores / float(len(step_indices))
 
@@ -237,16 +273,19 @@ def _save_feature_time_scores_csv(
     scores: torch.Tensor,  # [n_features]
     pos_mu: torch.Tensor,  # [steps, n_features]
     neg_mu: torch.Tensor,  # [steps, n_features]
+    delta: float,
 ) -> None:
     """保存“指定特征集合”的按 step 激活曲线（用于 exp54 的更细粒度控制）。
 
     CSV（长表）字段：
     - step_idx, timestep, feature_id
     - taris_score: 该特征的全局 TARIS 分数（与 time 无关）
-    - pos_mu, neg_mu, diff
+    - pos_mu_raw, neg_mu_raw, diff_raw: 原始均值差
+    - pos_mu_norm, neg_mu_norm, diff: 分母归一化后的占比差（exp54 默认读取这一列）
     """
     ensure_dir(os.path.dirname(path) or ".")
     ids = [int(x) for x in feature_ids]
+    d = float(delta)
     with open(path, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(
             f,
@@ -255,24 +294,41 @@ def _save_feature_time_scores_csv(
                 "timestep",
                 "feature_id",
                 "taris_score",
-                "pos_mu",
-                "neg_mu",
+                "energy_pos",
+                "energy_neg",
+                "pos_mu_raw",
+                "neg_mu_raw",
+                "diff_raw",
+                "pos_mu_norm",
+                "neg_mu_norm",
                 "diff",
             ],
         )
         w.writeheader()
 
         for step_idx, t in enumerate(list(timesteps)):
+            e_pos = float(pos_mu[int(step_idx)].sum().item()) + float(d)
+            e_neg = float(neg_mu[int(step_idx)].sum().item()) + float(d)
             for fid in ids:
+                pos_raw = float(pos_mu[int(step_idx), int(fid)].item())
+                neg_raw = float(neg_mu[int(step_idx), int(fid)].item())
+                pos_norm = float(pos_raw / e_pos)
+                neg_norm = float(neg_raw / e_neg)
                 w.writerow(
                     {
                         "step_idx": int(step_idx),
                         "timestep": int(t),
                         "feature_id": int(fid),
                         "taris_score": float(scores[int(fid)].item()),
-                        "pos_mu": float(pos_mu[int(step_idx), int(fid)].item()),
-                        "neg_mu": float(neg_mu[int(step_idx), int(fid)].item()),
-                        "diff": float((pos_mu[int(step_idx), int(fid)] - neg_mu[int(step_idx), int(fid)]).item()),
+                        "energy_pos": float(e_pos),
+                        "energy_neg": float(e_neg),
+                        "pos_mu_raw": float(pos_raw),
+                        "neg_mu_raw": float(neg_raw),
+                        "diff_raw": float(pos_raw - neg_raw),
+                        "pos_mu_norm": float(pos_norm),
+                        "neg_mu_norm": float(neg_norm),
+                        # 注意：diff 默认写“归一化差值”，供 exp54 直接读取使用
+                        "diff": float(pos_norm - neg_norm),
                     }
                 )
 
@@ -355,11 +411,23 @@ def run_exp53_concept_locator_taris(
         delta=float(concept_cfg.delta),
     )
 
-    # 5) 输出 Top-K（只保留“正向端”，即 scores 最大的那一侧）
+    # 5) 输出 Top-K（先应用黑名单过滤，再取正向端/反向端）
+    bl_path = os.path.join(out_dir, "feature_blacklist.txt")
+    bl_ids = _load_blacklist_ids(bl_path)
+    scores_pos = scores.clone()
+    scores_neg = scores.clone()
+    if bl_ids:
+        valid = [int(fid) for fid in bl_ids if 0 <= int(fid) < int(scores.numel())]
+        if valid:
+            idx = torch.tensor(valid, dtype=torch.long)
+            scores_pos[idx] = -float("inf")
+            scores_neg[idx] = float("inf")
+
+    # 5) 取 Top-K（正向/反向）
     k = max(1, int(concept_cfg.top_k))
-    top_pos_vals, top_pos_ids = torch.topk(scores, k=min(k, int(scores.numel())))
+    top_pos_vals, top_pos_ids = torch.topk(scores_pos, k=min(k, int(scores.numel())))
     # 负向 Top-K：scores 最小（反概念端），暂时保留，后续你可以用来做“anti-concept”分析
-    top_neg_vals, top_neg_ids = torch.topk(scores, k=min(k, int(scores.numel())), largest=False)
+    top_neg_vals, top_neg_ids = torch.topk(scores_neg, k=min(k, int(scores.numel())), largest=False)
 
     meta_path = os.path.join(out_dir, "taris_meta.txt")
     with open(meta_path, "w", encoding="utf-8") as f:
@@ -374,6 +442,9 @@ def run_exp53_concept_locator_taris(
         f.write(f"delta={float(concept_cfg.delta)}\n")
         f.write(f"selected_step_indices={list(map(int, step_indices))}\n")
         f.write(f"selected_timesteps={[int(pos_timesteps[i]) for i in step_indices]}\n")
+        f.write("feature_time_scores.diff=normalized_diff(pos_mu/sum_pos - neg_mu/sum_neg)\n")
+        f.write(f"blacklist_path={bl_path}\n")
+        f.write(f"blacklist_count={len(bl_ids)}\n")
         # 原始 json 的其他字段也写一下，方便追溯（例如你未来可能加注释/标签）
         extras = {k: v for k, v in raw_json.items() if k not in {"pos_prompts", "neg_prompts", "pos", "neg"}}
         if extras:
@@ -393,6 +464,7 @@ def run_exp53_concept_locator_taris(
         scores=scores,
         pos_mu=pos_mu,
         neg_mu=neg_mu,
+        delta=float(concept_cfg.delta),
     )
 
     # 保存一份 tensor 包，后续你可以直接加载做更多统计/可视化

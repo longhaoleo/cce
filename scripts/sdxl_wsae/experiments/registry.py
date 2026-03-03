@@ -7,6 +7,7 @@ from typing import Callable, Dict
 from ..configs import (
     CausalInterventionConfig,
     ConceptLocateConfig,
+    Exp55Config,
     RunConfig,
     SAEConfig,
     TemporalWindowConfig,
@@ -25,6 +26,7 @@ from .exp23_semantic_arithmetic import run_exp23_semantic_arithmetic
 from .exp24_orthogonality import run_exp24_orthogonality
 from .exp25_trajectory_grafting import run_exp25_trajectory_grafting
 from .exp53_concept_locator_taris import run_exp53_concept_locator_taris
+from .exp55_noisy_latent_probe import run_exp55_noisy_latent_probe
 
 
 SUPPORTED_EXPERIMENTS = {
@@ -33,6 +35,7 @@ SUPPORTED_EXPERIMENTS = {
     "exp51": "特征动力学 Top-K 热图叠加",
     "exp52": "特征动力学瀑布图（Money Plot）",
     "exp53": "概念定位（TARIS 时域平均相对重要性）",
+    "exp55": "真实图像概念定位验刀（Noisy Latent Probe）",
     "exp05": "结构与画幅控制特征",
     "exp06": "双编码器解耦验证",
     "exp07": "CLIP 对齐定量评估",
@@ -55,6 +58,7 @@ def run_experiment(
     concept_cfg: ConceptLocateConfig,
     clip_cfg: ClipEvalConfig,
     tw_cfg: TemporalWindowConfig,
+    exp55_cfg: Exp55Config,
 ) -> None:
     """按实验编号分发到对应实现。"""
     exp = str(experiment).lower()
@@ -67,6 +71,7 @@ def run_experiment(
         "exp52": lambda: run_exp52_feature_dynamics_waterfall(model_cfg, sae_cfg, run_cfg, viz_cfg),
         "exp53": lambda: run_exp53_concept_locator_taris(model_cfg, sae_cfg, run_cfg, concept_cfg, viz_cfg.output_dir),
         "exp54": lambda: run_exp54_intervention_suite(model_cfg, sae_cfg, run_cfg, int_cfg, tw_cfg, viz_cfg.output_dir),
+        "exp55": lambda: run_exp55_noisy_latent_probe(model_cfg, sae_cfg, exp55_cfg, viz_cfg.output_dir),
 
         "exp05": lambda: run_exp05_structure_aspect(model_cfg, sae_cfg, run_cfg, int_cfg, viz_cfg.output_dir),
         "exp06": lambda: run_exp06_dual_encoder(model_cfg, sae_cfg, run_cfg, int_cfg, viz_cfg.output_dir),

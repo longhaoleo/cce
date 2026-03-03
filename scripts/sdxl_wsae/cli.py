@@ -8,6 +8,7 @@ from .configs import (
     CausalInterventionConfig,
     ConceptLocateConfig,
     DEFAULT_BLOCKS,
+    Exp55Config,
     ModelConfig,
     RunConfig,
     SAEConfig,
@@ -40,7 +41,8 @@ def parse_args() -> argparse.Namespace:
     g_exp53 = parser.add_argument_group("exp53：概念定位（TARIS）")
     g_exp54 = parser.add_argument_group("exp54：特征干预")
     g_block = parser.add_argument_group("exp54：可多 block")
-    g_exp54_tw = parser.add_argument_group("exp54：时间窗（early/late）")
+    g_exp54_tw = parser.add_argument_group("exp54：时间窗（early/mid/late）")
+    g_exp55 = parser.add_argument_group("exp55：真实图像验刀（Noisy Latent Probe）")
     g_clip = parser.add_argument_group("exp07：CLIP 评估")
 
     g_main.add_argument(
@@ -173,16 +175,66 @@ def parse_args() -> argparse.Namespace:
         default=0.25,
         help="gaussian_center 的 sigma 相对尺度（sigma_px = sigma * min(H,W)）",
     )
-    g_exp54.add_argument("--int_t_start", type=int, default=850, help="main 窗口：t_start")
-    g_exp54.add_argument("--int_t_end", type=int, default=550, help="main 窗口：t_end")
+    g_exp54.add_argument("--int_t_start", type=int, default=850, help="custom 窗口：t_start")
+    g_exp54.add_argument("--int_t_end", type=int, default=550, help="custom 窗口：t_end")
     g_exp54.add_argument("--int_step_start", type=int, default=-1, help=">=0 时启用 step 下界（优先生效）")
     g_exp54.add_argument("--int_step_end", type=int, default=-1, help=">=0 时启用 step 上界（优先生效）")
     g_exp54.add_argument("--no_baseline", action="store_true", help="不跑 baseline（节省一半计算）")
 
     g_exp54_tw.add_argument("--early_start", type=int, default=1000, help="early 窗口 t_start")
     g_exp54_tw.add_argument("--early_end", type=int, default=850, help="early 窗口 t_end")
+    g_exp54_tw.add_argument("--mid_start", type=int, default=850, help="mid 窗口 t_start")
+    g_exp54_tw.add_argument("--mid_end", type=int, default=550, help="mid 窗口 t_end")
     g_exp54_tw.add_argument("--late_start", type=int, default=550, help="late 窗口 t_start")
     g_exp54_tw.add_argument("--late_end", type=int, default=0, help="late 窗口 t_end")
+
+    g_exp55.add_argument("--exp55_image_root", type=str, default="", help="真实图像目录（建议 COCO/LAION 子集）")
+    g_exp55.add_argument("--exp55_block", type=str, default="unet.mid_block.attentions.0", help="exp55 使用的单 block")
+    g_exp55.add_argument("--exp55_concept_name", type=str, default="", help="exp53 概念名（用于读取 out_concept_dict_<block>/<concept>）")
+    g_exp55.add_argument("--exp55_feature_top_k", type=int, default=1, help="从 top_positive_features.csv 取前 K 个特征")
+    g_exp55.add_argument("--exp55_noise_t", type=int, default=700, help="加噪时间步 t（建议 500~800）")
+    g_exp55.add_argument("--exp55_t_start", type=int, default=700, help="t 范围上界（高噪侧）")
+    g_exp55.add_argument("--exp55_t_end", type=int, default=700, help="t 范围下界（低噪侧）")
+    g_exp55.add_argument("--exp55_num_t_samples", type=int, default=1, help="在 [t_start,t_end] 均匀采样多少个 t")
+    g_exp55.add_argument(
+        "--exp55_t_aggregate",
+        type=str,
+        default="freq",
+        choices=["freq", "mean"],
+        help="多 t 聚合方式：freq=统计各 t Top-N 出现频次；mean=按分数均值排序",
+    )
+    g_exp55.add_argument(
+        "--exp55_write_blacklist",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="是否将 exp55 识别出的高频特征写入概念目录黑名单（feature_blacklist.txt）",
+    )
+    g_exp55.add_argument(
+        "--exp55_blacklist_freq_threshold",
+        type=float,
+        default=0.99,
+        help="黑名单阈值：特征激活频率 >= 该值时加入黑名单",
+    )
+    g_exp55.add_argument(
+        "--exp55_blacklist_eps",
+        type=float,
+        default=1e-6,
+        help="判定“该图激活该特征”的阈值 eps（feature_max > eps）",
+    )
+    g_exp55.add_argument(
+        "--exp55_blacklist_filename",
+        type=str,
+        default="feature_blacklist.txt",
+        help="写入概念目录的黑名单文件名",
+    )
+    g_exp55.add_argument("--exp55_max_images", type=int, default=1500, help="最多采样多少张图")
+    g_exp55.add_argument("--exp55_top_n", type=int, default=20, help="输出 top-n 图像与热图")
+    g_exp55.add_argument("--exp55_resolution", type=int, default=1024, help="输入分辨率（会 resize）")
+    g_exp55.add_argument("--exp55_pooling", type=str, default="max", choices=["max", "topk_mean"], help="空间聚合：max 或 topk_mean")
+    g_exp55.add_argument("--exp55_pool_topk", type=int, default=16, help="topk_mean 时使用的 K")
+    g_exp55.add_argument("--exp55_overlay_alpha", type=float, default=0.55, help="热图叠加透明度")
+    g_exp55.add_argument("--exp55_dataset_seed", type=int, default=42, help="数据采样随机种子")
+    g_exp55.add_argument("--exp55_recursive", action=argparse.BooleanOptionalAction, default=True, help="是否递归扫描子目录")
 
 
 
@@ -272,17 +324,42 @@ def build_configs(args: argparse.Namespace):
     tw_cfg = TemporalWindowConfig(
         early_start=int(args.early_start),
         early_end=int(args.early_end),
+        mid_start=int(args.mid_start),
+        mid_end=int(args.mid_end),
         late_start=int(args.late_start),
         late_end=int(args.late_end),
     )
+    exp55_cfg = Exp55Config(
+        image_root=str(getattr(args, "exp55_image_root", "") or ""),
+        block=str(getattr(args, "exp55_block", "unet.mid_block.attentions.0")),
+        concept_name=str(getattr(args, "exp55_concept_name", "") or ""),
+        feature_top_k=int(getattr(args, "exp55_feature_top_k", 1)),
+        noise_t=int(getattr(args, "exp55_noise_t", 700)),
+        t_start=int(getattr(args, "exp55_t_start", 700)),
+        t_end=int(getattr(args, "exp55_t_end", 700)),
+        num_t_samples=int(getattr(args, "exp55_num_t_samples", 1)),
+        t_aggregate=str(getattr(args, "exp55_t_aggregate", "freq")),
+        write_blacklist=bool(getattr(args, "exp55_write_blacklist", True)),
+        blacklist_freq_threshold=float(getattr(args, "exp55_blacklist_freq_threshold", 0.99)),
+        blacklist_eps=float(getattr(args, "exp55_blacklist_eps", 1e-6)),
+        blacklist_filename=str(getattr(args, "exp55_blacklist_filename", "feature_blacklist.txt")),
+        max_images=int(getattr(args, "exp55_max_images", 1500)),
+        top_n=int(getattr(args, "exp55_top_n", 20)),
+        resolution=int(getattr(args, "exp55_resolution", 1024)),
+        pooling=str(getattr(args, "exp55_pooling", "max")),
+        pool_topk=int(getattr(args, "exp55_pool_topk", 16)),
+        overlay_alpha=float(getattr(args, "exp55_overlay_alpha", 0.55)),
+        dataset_seed=int(getattr(args, "exp55_dataset_seed", 42)),
+        recursive=bool(getattr(args, "exp55_recursive", True)),
+    )
 
-    return model_cfg, sae_cfg, run_cfg, viz_cfg, int_cfg, concept_cfg, clip_cfg, tw_cfg
+    return model_cfg, sae_cfg, run_cfg, viz_cfg, int_cfg, concept_cfg, clip_cfg, tw_cfg, exp55_cfg
 
 
 def main() -> None:
     """程序主入口。"""
     args = parse_args()
-    model_cfg, sae_cfg, run_cfg, viz_cfg, int_cfg, concept_cfg, clip_cfg, tw_cfg = build_configs(args)
+    model_cfg, sae_cfg, run_cfg, viz_cfg, int_cfg, concept_cfg, clip_cfg, tw_cfg, exp55_cfg = build_configs(args)
     run_experiment(
         experiment=args.experiment,
         model_cfg=model_cfg,
@@ -293,4 +370,5 @@ def main() -> None:
         concept_cfg=concept_cfg,
         clip_cfg=clip_cfg,
         tw_cfg=tw_cfg,
+        exp55_cfg=exp55_cfg,
     )
