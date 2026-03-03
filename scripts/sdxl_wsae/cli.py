@@ -59,9 +59,11 @@ def parse_args() -> argparse.Namespace:
     g_model.add_argument("--dtype", type=str, default="fp16", help="fp16/bf16/fp32（cpu+fp16 会自动回退）")
 
     # g_main.add_argument("--prompt", type=str, default="a child hold kitchen knife on the table, scary lighting.")
-    # g_main.add_argument("--prompt", type=str, default="a empty street, sunny day.")
-    g_main.add_argument("--prompt", type=str, default="a empty countryside road.")
+    g_main.add_argument("--prompt", type=str, default="a empty street.")
+    # g_main.add_argument("--prompt", type=str, default="a empty countryside road.")
+    # g_main.add_argument("--prompt", type=str, default="a dog in park, sunny day.")
     # g_main.add_argument("--prompt", type=str, default="a car in the street, sunny day.")
+    # g_main.add_argument("--prompt", type=str, default="a handsome man with glasses.")
     g_main.add_argument("--steps", type=int, default=30)
     g_main.add_argument("--guidance_scale", type=float, default=8.0)
     g_main.add_argument("--seed", type=int, default=42)
@@ -72,6 +74,7 @@ def parse_args() -> argparse.Namespace:
     g_sae.add_argument("--prefer_k", type=int, default=10, help="检查点选择优先 k")
     g_sae.add_argument("--prefer_hidden", type=int, default=5120, help="检查点选择优先 hidden")
 
+# EXP 51
     g_exp51.add_argument("--sae_top_k", type=int, default=10, help="top-k")
     g_exp51.add_argument("--delta_stride", type=int, default=1, help="每隔多少 step 保存一张叠加图")
     g_exp51.add_argument("--overlay_alpha", type=float, default=0.75, help="叠加透明度")
@@ -101,6 +104,7 @@ def parse_args() -> argparse.Namespace:
         help="固定特征模式：按 exp53 目录规则自动读取该概念的 top_positive_features.csv（按 block_short 分目录）",
     )
 
+# EXP 52
     g_exp52.add_argument("--waterfall_max_features", type=int, default=1024, help="最多画多少特征")
     g_exp52.add_argument("--waterfall_norm", type=str, default="none", choices=["row", "global", "none"], help="归一化方式")
     g_exp52.add_argument("--waterfall_cmap", type=str, default="magma", help="colormap")
@@ -117,6 +121,9 @@ def parse_args() -> argparse.Namespace:
             ],
         help="exp51/exp54 用：可传多个 block（同时 hook）",
     )
+
+# EXP 53
+
     g_exp53.add_argument(
         "--loc_block",
         type=str,
@@ -134,10 +141,12 @@ def parse_args() -> argparse.Namespace:
     g_exp53.add_argument("--taris_top_k", type=int, default=50, help="输出 top-k 特征数（只输出正向端）")
 
 
+# EXP 54
+
     g_exp54.add_argument(
         "--targetconcept",
         type=str,
-        default="red",
+        default="cyberpunk",
         help="概念名：将自动从 out_concept_dict_<block_short>/<targetconcept>/ 读取 csv",
     )
     g_exp54.add_argument(
@@ -175,7 +184,7 @@ def parse_args() -> argparse.Namespace:
         default=0.25,
         help="gaussian_center 的 sigma 相对尺度（sigma_px = sigma * min(H,W)）",
     )
-    g_exp54.add_argument("--int_t_start", type=int, default=850, help="custom 窗口：t_start")
+    g_exp54.add_argument("--int_t_start", type=int, default=1000, help="custom 窗口：t_start")
     g_exp54.add_argument("--int_t_end", type=int, default=550, help="custom 窗口：t_end")
     g_exp54.add_argument("--int_step_start", type=int, default=-1, help=">=0 时启用 step 下界（优先生效）")
     g_exp54.add_argument("--int_step_end", type=int, default=-1, help=">=0 时启用 step 上界（优先生效）")
@@ -187,6 +196,8 @@ def parse_args() -> argparse.Namespace:
     g_exp54_tw.add_argument("--mid_end", type=int, default=550, help="mid 窗口 t_end")
     g_exp54_tw.add_argument("--late_start", type=int, default=550, help="late 窗口 t_start")
     g_exp54_tw.add_argument("--late_end", type=int, default=0, help="late 窗口 t_end")
+
+# exp 55
 
     g_exp55.add_argument("--exp55_image_root", type=str, default="", help="真实图像目录（建议 COCO/LAION 子集）")
     g_exp55.add_argument("--exp55_block", type=str, default="unet.mid_block.attentions.0", help="exp55 使用的单 block")
