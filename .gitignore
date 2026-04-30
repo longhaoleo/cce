@@ -1,0 +1,39 @@
+# Model weights / checkpoints / binary artifacts
+*.pt
+*.pth
+*.bin
+*.ckpt
+*.pkl
+*.safetensors
+
+# Data and generated outputs
+/data/
+/image_output/
+/test_idea/
+/concept_dict/
+/concept_dict_freq/
+/feature_frequency/
+/eval_original/
+/eval_erased/
+/train/output*/
+checkpoints/
+models/
+
+# Archives
+*.zip
+*.tar.gz
+*.rar
+
+# Python cache
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# Logs and temp files
+*.log
+/.git_backup_*/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store

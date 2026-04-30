@@ -1,0 +1,248 @@
+# 可选实验预设
+# exp_a_shared_recon
+# exp_b_shared_align
+# exp_c_adapter_align
+# exp_d_full
+
+
+# 下载模型（可选）
+python train/download_sdxl_models.py \
+  --target_root ~/autodl-tmp/models \
+  --model_ids stabilityai/stable-diffusion-xl-base-1.0
+
+
+# Smoke：快速排雷，不做最终结论
+# 建议先改 PRESET，再直接运行下面 1 条命令
+PRESET=exp_a_shared_recon
+OUT=train/output_smoke_${PRESET}
+python train/run_smoke_train.py \
+  --output_root "$OUT" \
+  --local_files_only \
+  --validation_prompts 50 \
+  --stage2_train_prompts 500 \
+  --stage1_train_prompts 100 \
+  --calibration_prompts 100 \
+  --experiment_preset "$PRESET"
+
+
+# Pilot：中等规模比较实验
+# 用来比较 A/B/C/D，筛出值得 full run 的方案
+PRESET=exp_b_shared_align
+OUT=train/output_pilot_${PRESET}
+python train/run_train.py \
+  --output_root "$OUT" \
+  --local_files_only \
+  --validation_prompts 200 \
+  --stage2_train_prompts 2000 \
+  --stage1_train_prompts 500 \
+  --calibration_prompts 200 \
+  --num_step_buckets 5 \
+  --shard_prompts 100 \
+  --experiment_preset "$PRESET"
+
+
+# Full：正式训练
+# 在 pilot 里选出最值得继续的 PRESET 后再跑
+PRESET=exp_d_full
+OUT=train/output_${PRESET}
+python train/run_train.py \
+  --output_root "$OUT" \
+  --local_files_only \
+  --steps 50 \
+  --validation_prompts 1000 \
+  --stage2_train_prompts 20000 \
+  --stage1_train_prompts 5000 \
+  --calibration_prompts 1000 \
+  --num_step_buckets 5 \
+  --shard_prompts 250 \
+  --experiment_preset "$PRESET"
+
+
+# 如果只想跑默认完整主线，也可以直接用：
+python train/run_train.py \
+  --output_root train/output_shared_sae \
+  --local_files_only \
+  --steps 50 \
+  --validation_prompts 1000 \
+  --stage2_train_prompts 20000 \
+  --stage1_train_prompts 5000 \
+  --calibration_prompts 1000 \
+  --num_step_buckets 5 \
+  --shard_prompts 250 \
+  --time_branch_mode sincos_linear \
+  --spatial_branch_mode sincos_linear
+
+
+# Step-3：时间分支 + decoder decorrelation
+# 当前正式训练命令：
+# 1) 打开 time_branch
+# 2) 暂时关闭 spatial_branch
+# 3) 保留 stage1 和 stage3
+# 4) 不跑 stage4 / block_out_adapter
+# 5) 不保存中间 checkpoint，只保留阶段末尾保存
+# 6) 这是 full 版；若先想省时间，优先跑下面的 half 版
+python train/run_train.py \
+  --experiment_preset custom \
+  --output_root train/output_time_decorr_stage123 \
+  --local_files_only \
+  --steps 50 \
+  --validation_prompts 1000 \
+  --stage2_train_prompts 20000 \
+  --stage1_train_prompts 5000 \
+  --calibration_prompts 1000 \
+  --num_step_buckets 5 \
+  --shard_prompts 250 \
+  --use_time_branch \
+  --time_branch_mode sincos_linear \
+  --no-use_spatial_branch \
+  --run_stage1 \
+  --run_stage3 \
+  --no-run_stage4 \
+  --use_block_in_adapter \
+  --no-use_block_out_adapter \
+  --align_weight_target 0.1 \
+  --decoder_decorr_weight 3e-4 \
+  --auxk 256 \
+  --save_every_steps 0
+
+
+# Step-3：时间分支 + decoder decorrelation（half 版，优先推荐）
+# 目的：
+# 1) 先验证 time_branch 和 decoder decorrelation 是否有效
+# 2) 比 full 版少训一半左右，降低试错成本
+python train/run_train.py \
+  --experiment_preset custom \
+  --output_root train/output_time_decorr_stage123_half \
+  --local_files_only \
+  --steps 50 \
+  --validation_prompts 500 \
+  --stage2_train_prompts 10000 \
+  --stage1_train_prompts 2500 \
+  --calibration_prompts 500 \
+  --num_step_buckets 5 \
+  --shard_prompts 250 \
+  --use_time_branch \
+  --time_branch_mode sincos_linear \
+  --no-use_spatial_branch \
+  --run_stage1 \
+  --run_stage3 \
+  --no-run_stage4 \
+  --use_block_in_adapter \
+  --no-use_block_out_adapter \
+  --align_weight_target 0.1 \
+  --decoder_decorr_weight 3e-4 \
+  --auxk 256 \
+  --save_every_steps 0
+
+
+# Step-3 后续验证：no stage1，多 block 联合训练（half 版）
+# 目的：
+# 1) 保留 time_branch
+# 2) 去掉 stage1，避免 time_branch 在单层预热中提前主导
+# 3) 继续用四层联合训练（stage2 + stage3）
+# 4) 先用 half 规模验证 dead feature 是否继续改善
+python train/run_train.py \
+  --experiment_preset custom \
+  --output_root train/output_time_decorr_stage23_half_no_stage1 \
+  --local_files_only \
+  --steps 50 \
+  --validation_prompts 500 \
+  --stage2_train_prompts 10000 \
+  --stage1_train_prompts 2500 \
+  --calibration_prompts 500 \
+  --num_step_buckets 5 \
+  --shard_prompts 250 \
+  --use_time_branch \
+  --time_branch_mode sincos_linear \
+  --no-use_spatial_branch \
+  --no-run_stage1 \
+  --run_stage3 \
+  --no-run_stage4 \
+  --use_block_in_adapter \
+  --no-use_block_out_adapter \
+  --align_weight_target 0.1 \
+  --decoder_decorr_weight 1e-2 \
+  --auxk 256 \
+  --save_every_steps 0
+
+
+# SharedSAE 高频特征统计（第一遍：基础统计）
+python tools/feature_frequency/run_collect_shared_stats.py \
+  --ckpt_dir train/output_exp_c_adapter_align/checkpoints/stage3_step_0027400 \
+  --local_files_only \
+  --prompts_path data/coco_30k.csv \
+  --blocks \
+    unet.down_blocks.2.attentions.1 \
+    unet.mid_block.attentions.0 \
+    unet.up_blocks.0.attentions.0 \
+    unet.up_blocks.0.attentions.1 \
+  --max_prompts 1000 \
+  --steps 50 \
+  --guidance_scale 8.0 \
+  --resolution 512 \
+  --feature_top_k 200 \
+  --run_name coco30k_stats_v1
+
+
+# SharedSAE 高频特征统计（第二遍：按规则生成 blacklist）
+# 如果先跑过这一步，Shared exp53 会自动读取
+# concept_dict_freq/<block>/feature_blacklist.txt，并在排序时排除这些高频特征。
+python tools/feature_frequency/run_build_blacklist.py \
+  --stats_dir feature_frequency/coco30k_stats_v1 \
+  --feature_top_k 200 \
+  --blacklist_freq_threshold 0.99 \
+  --blacklist_active_ratio_min 0.3 \
+  --blacklist_max_features 50
+
+
+# SharedSAE 概念查找
+python -m runtime.shared.locator \
+  --ckpt_dir train/output_exp_c_adapter_align/checkpoints/stage3_step_0027400 \
+  --local_files_only \
+  --only dog \
+  --taris_top_k 10 \
+  --taris_score_mode taris
+
+
+# SharedSAE 概念查找（nudity）
+python -m runtime.shared.locator \
+  --ckpt_dir train/output_exp_c_adapter_align/checkpoints/stage3_step_0027400 \
+  --local_files_only \
+  --only nudity \
+  --taris_top_k 10 \
+  --taris_score_mode taris
+
+
+
+# 图片级概念擦除测试
+# 说明：
+# 1) 默认会从 output_root/checkpoints 里自动找最新 checkpoint
+# 2) 会额外保存到 eval_original/ 和 eval_erased/，方便继续接 LPIPS / DreamSim
+python -m runtime.shared.erase \
+  --ckpt_dir train/output_exp_c_adapter_align/checkpoints/stage3_step_0027400 \
+  --local_files_only \
+  --targetconcept dog \
+  --prompt "a dog on the grass, realistic, natural lighting" \
+  --output_dir image_output/shared_concept_erase_dog \
+  --blocks \
+    unet.down_blocks.2.attentions.1 \
+    unet.up_blocks.0.attentions.0 \
+    unet.up_blocks.0.attentions.1 \
+  --int_feature_top_k 5 \
+  --int_scale 20 \
+  --no-int_use_time_weight
+
+# 可选扩展：
+# 1) --int_use_time_weight：乘 exp53 的 step 权重
+# 2) --int_step_start / --int_step_end：显式 step 窗口
+# 3) --int_use_spatial_weight：按 token 范数做空间归一化权重
+# 4) --concept_root concept_dict：显式指定概念统计根目录
+
+
+# SharedSAE 批量概念擦除（nudity）
+python -m runtime.shared.batch \
+  --ckpt_dir train/output_exp_c_adapter_align/checkpoints/stage3_step_0027400 \
+  --local_files_only \
+  --prompts_path batch_test_prompt/nudity.csv \
+  --concepts nudity \
+  --output_dir image_output/batch_shared_concept_erase_nudity
