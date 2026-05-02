@@ -31,10 +31,13 @@ class StepMetric:
     loss_auxk: float
     loss_align: float
     loss_decoder_decorr: float
+    loss_latent_decorr: float
     loss_auxk_term: float
     loss_align_term: float
     loss_decoder_decorr_term: float
+    loss_latent_decorr_term: float
     align_weight: float
+    time_branch_scale: float
     latent_active_frac: float
     dead_feature_frac: float
     lr_shared: float
@@ -143,7 +146,9 @@ def plot_loss_curves(output_root: str) -> Dict[str, str]:
     auxk = [float(r["loss_auxk"]) for r in rows]
     align = [float(r["loss_align"]) for r in rows]
     decoder_decorr = [float(r.get("loss_decoder_decorr", 0.0)) for r in rows]
+    latent_decorr = [float(r.get("loss_latent_decorr", 0.0)) for r in rows]
     align_w = [float(r["align_weight"]) for r in rows]
+    time_scale = [float(r.get("time_branch_scale", 1.0)) for r in rows]
 
     fig_dir = root / "metrics"
     fig_dir.mkdir(parents=True, exist_ok=True)
@@ -155,6 +160,7 @@ def plot_loss_curves(output_root: str) -> Dict[str, str]:
     plt.plot(steps, auxk, label="loss_auxk", linewidth=1.4)
     plt.plot(steps, align, label="loss_align", linewidth=1.4)
     plt.plot(steps, decoder_decorr, label="loss_decoder_decorr", linewidth=1.2)
+    plt.plot(steps, latent_decorr, label="loss_latent_decorr", linewidth=1.2)
     plt.xlabel("global_step")
     plt.ylabel("loss")
     plt.title("Shared SAE Training Loss Curves")
@@ -165,12 +171,13 @@ def plot_loss_curves(output_root: str) -> Dict[str, str]:
     fig1.savefig(loss_curve_path, dpi=160)
     plt.close(fig1)
 
-    # 图2：align_weight 调度曲线
+    # 图2：align_weight / time_branch_scale 调度曲线
     fig2 = plt.figure(figsize=(10, 4))
     plt.plot(steps, align_w, label="align_weight", color="#CC5500", linewidth=1.8)
+    plt.plot(steps, time_scale, label="time_branch_scale", color="#3366CC", linewidth=1.8)
     plt.xlabel("global_step")
-    plt.ylabel("align_weight")
-    plt.title("Alignment Weight Schedule")
+    plt.ylabel("weight / scale")
+    plt.title("Training Schedules")
     plt.grid(alpha=0.25)
     plt.legend()
     align_curve_path = fig_dir / "align_weight_curve.png"

@@ -266,6 +266,18 @@ def parse_args() -> argparse.Namespace:
         help="时间分支 MLP 隐层维度（linear 模式下可忽略）。",
     )
     g_cond.add_argument(
+        "--time_branch_warmup_start_ratio",
+        type=float,
+        default=0.0,
+        help="time branch 延迟开启比例；0 表示从阶段开始就可用。",
+    )
+    g_cond.add_argument(
+        "--time_branch_warmup_ratio",
+        type=float,
+        default=0.0,
+        help="time branch 从 0 线性升到 1 的阶段比例；0 表示不做调度。",
+    )
+    g_cond.add_argument(
         "--spatial_embed_dim",
         type=int,
         default=64,
@@ -380,6 +392,18 @@ def parse_args() -> argparse.Namespace:
         help="decoder 去相关正则权重；>0 时惩罚字典方向间的非对角相关性。",
     )
     g_opt.add_argument(
+        "--latent_decorr_weight",
+        type=float,
+        default=0.0,
+        help="latent 协方差去相关正则权重；直接惩罚 batch 内 feature 共激活。",
+    )
+    g_opt.add_argument(
+        "--latent_decorr_top_k",
+        type=int,
+        default=256,
+        help="latent 去相关只作用于 batch 内 top-active feature；0 表示关闭。",
+    )
+    g_opt.add_argument(
         "--tokens_per_step_target",
         type=int,
         default=4096,
@@ -440,6 +464,8 @@ def build_config(args: argparse.Namespace) -> TrainConfig:
         spatial_branch_mode=str(args.spatial_branch_mode),
         time_embed_dim=int(args.time_embed_dim),
         time_hidden_dim=int(args.time_hidden_dim),
+        time_branch_warmup_start_ratio=float(args.time_branch_warmup_start_ratio),
+        time_branch_warmup_ratio=float(args.time_branch_warmup_ratio),
         spatial_embed_dim=int(args.spatial_embed_dim),
         spatial_hidden_dim=int(args.spatial_hidden_dim),
         lr_time=float(args.lr_time),
@@ -447,6 +473,8 @@ def build_config(args: argparse.Namespace) -> TrainConfig:
         align_weight_target=float(args.align_weight_target),
         align_warmup_ratio=float(args.align_warmup_ratio),
         decoder_decorr_weight=float(args.decoder_decorr_weight),
+        latent_decorr_weight=float(args.latent_decorr_weight),
+        latent_decorr_top_k=int(args.latent_decorr_top_k),
         tokens_per_step_target=int(args.tokens_per_step_target),
         group_bs_stage1=int(args.group_bs_stage1),
         group_bs_stage2=int(args.group_bs_stage2),

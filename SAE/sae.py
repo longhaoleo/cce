@@ -142,12 +142,17 @@ class TimeBranch(nn.Module):
 
         if self.mode == "sincos_linear":
             self.proj = nn.Linear(self.embed_dim, self.n_dirs)
+            nn.init.zeros_(self.proj.weight)
+            nn.init.zeros_(self.proj.bias)
         elif self.mode == "sincos_mlp":
             self.proj = nn.Sequential(
                 nn.Linear(self.embed_dim, self.hidden_dim),
                 nn.SiLU(),
                 nn.Linear(self.hidden_dim, self.n_dirs),
             )
+            last = self.proj[-1]
+            nn.init.zeros_(last.weight)
+            nn.init.zeros_(last.bias)
         else:
             self.proj = nn.Sequential(
                 nn.Linear(self.embed_dim, self.hidden_dim),
@@ -377,6 +382,7 @@ class SharedSAE(nn.Module):
         base: torch.Tensor,
         timestep: torch.Tensor,
         coords_norm: torch.Tensor,
+        time_branch_scale: float = 1.0,
     ) -> torch.Tensor:
         """组合时间/空间分支，得到最终 pre-activation。
 
@@ -395,6 +401,13 @@ class SharedSAE(nn.Module):
         n_tokens = int(base.shape[0])
         if self.use_time_branch:
             b_t, gamma_t, beta_t = self.time_branch(timestep=timestep, n_tokens=n_tokens)
+            scale_t = float(time_branch_scale)
+            if b_t is not None:
+                b_t = b_t * scale_t
+            if gamma_t is not None:
+                gamma_t = gamma_t * scale_t
+            if beta_t is not None:
+                beta_t = beta_t * scale_t
         else:
             b_t = gamma_t = beta_t = None
         if self.use_spatial_branch:
@@ -473,6 +486,7 @@ class SharedSAE(nn.Module):
         coords_norm: torch.Tensor,
         use_out_adapter: bool = False,
         update_dead_stats: bool = True,
+        time_branch_scale: float = 1.0,
     ) -> ForwardCache:
         """执行一次 Shared SAE 前向。
 
@@ -501,7 +515,12 @@ class SharedSAE(nn.Module):
                 timestep_t = torch.tensor([0.0], device=x.device, dtype=x.dtype)
 
         # `pre_act` = 共享 encoder 输出 + 时空条件修正。
-        p = self._compose_pre_activation(base=base, timestep=timestep_t, coords_norm=coords_norm.to(device=x.device, dtype=x.dtype))
+        p = self._compose_pre_activation(
+            base=base,
+            timestep=timestep_t,
+            coords_norm=coords_norm.to(device=x.device, dtype=x.dtype),
+            time_branch_scale=float(time_branch_scale),
+        )
         # 主稀疏化发生在这里：ReLU 负责非负激活，top-k 负责控制稀疏度。
         z = _topk_keep(torch.relu(p), int(self.top_k))
         # 先用共享 decoder 重建，再按需叠加 output adapter。

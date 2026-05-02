@@ -65,7 +65,7 @@ class TimeInterventionConfig:
     """时间方向上的干预控制。"""
 
     use_weight: bool = True
-    weight_scale: float = 80.0
+    weight_scale: float = 1.0
     t_start: int = 900
     t_end: int = 100
     step_start: Optional[int] = None
@@ -185,7 +185,7 @@ def add_intervention_args(
         choices=["ablation", "projected_ablation"],
         help="概念操作模式。",
     )
-    group.add_argument("--int_scale", type=float, default=100.0, help="全局干预强度。")
+    group.add_argument("--int_scale", type=float, default=3000.0, help="全局干预强度。")
     group.add_argument("--int_feature_top_k", type=int, default=5, help="从 top_positive_features.csv 读取前 K 个特征。")
     group.add_argument(
         "--int_projection_ridge",
@@ -200,20 +200,20 @@ def add_intervention_args(
         help="是否乘上 feature_time_scores.csv 的 step 权重。",
     )
     group.add_argument(
-        "--int_time_weight_scale",
-        type=float,
-        default=None,
-        help="对 feature_time_scores.csv 的时间权重再乘一个全局放大系数；默认与 int_scale 保持一致。",
+        "--concept_dict_freq_root",
+        type=str,
+        default="concept_dict_freq",
+        help="全局高频特征 blacklist 根目录，用于擦除前二次过滤。",
     )
-    group.add_argument("--int_t_start", type=int, default=900, help="干预时间窗上界（高噪声侧）；默认收窄到 900。")
-    group.add_argument("--int_t_end", type=int, default=100, help="干预时间窗下界（低噪声侧）；默认收窄到 100。")
+    group.add_argument("--int_t_start", type=int, default=950, help="干预时间窗上界（高噪声侧）；默认收窄到 900。")
+    group.add_argument("--int_t_end", type=int, default=0, help="干预时间窗下界（低噪声侧）；默认收窄到 100。")
     group.add_argument("--int_step_start", type=int, default=-1, help=">=0 时启用 step 下界。")
     group.add_argument("--int_step_end", type=int, default=-1, help=">=0 时启用 step 上界。")
     group.add_argument(
         "--int_use_spatial_weight",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="是否启用空间归一化权重（按 token 范数归一化）。",
+        help="是否启用空间归一化权重（按 token 范数归一化）；默认开启，关闭仅用于消融。",
     )
     group.add_argument(
         "--use_out_adapter_for_decode",
@@ -225,7 +225,6 @@ def add_intervention_args(
 
 def build_intervention_cfg_from_args(args: argparse.Namespace) -> SharedInterventionConfig:
     """从 CLI 参数构造结构化干预配置。"""
-    time_weight_scale = float(args.int_scale) if args.int_time_weight_scale is None else float(args.int_time_weight_scale)
     return SharedInterventionConfig(
         mode=str(args.int_mode),
         scale=float(args.int_scale),
@@ -235,7 +234,7 @@ def build_intervention_cfg_from_args(args: argparse.Namespace) -> SharedInterven
         apply_only_conditional=True,
         time=TimeInterventionConfig(
             use_weight=bool(args.int_use_time_weight),
-            weight_scale=time_weight_scale,
+            weight_scale=1.0,
             t_start=int(args.int_t_start),
             t_end=int(args.int_t_end),
             step_start=_step_or_none(int(args.int_step_start)),
@@ -280,7 +279,7 @@ def _resolve_concept_dir(*, block: str, targetconcept: str, concept_root: str) -
     raise FileNotFoundError(f"概念目录不存在: tried={tried}")
 
 
-def _load_topk_feature_ids(csv_path: Path, top_k: int) -> List[int]:
+def _load_topk_feature_ids(csv_path: Path, top_k: int, blacklist_ids: set[int] | None = None) -> List[int]:
     """从 top_positive_features.csv 读取前 K 个 feature_id。"""
     if int(top_k) <= 0:
         raise ValueError("feature_top_k 必须 > 0。")
@@ -301,6 +300,9 @@ def _load_topk_feature_ids(csv_path: Path, top_k: int) -> List[int]:
             except Exception:
                 continue
     rows.sort(key=lambda item: item[1], reverse=True)
+    if blacklist_ids:
+        blacklist = {int(fid) for fid in blacklist_ids}
+        rows = [(fid, score) for fid, score in rows if int(fid) not in blacklist]
     return [feature_id for feature_id, _score in rows[: int(top_k)]]
 
 
@@ -312,16 +314,21 @@ def _resolve_feature_bundle(
     top_k: int,
     total_steps: int,
     use_time_weight: bool,
+    blacklist_root: str = "concept_dict_freq",
 ) -> FeatureBundle:
     """解析单个 block 的特征列表与可选时间权重。"""
     concept_dir = _resolve_concept_dir(block=block, targetconcept=targetconcept, concept_root=concept_root)
     rank_csv = concept_dir / "top_positive_features.csv"
-    feature_ids = _load_topk_feature_ids(rank_csv, top_k)
-    blacklist_ids = _load_blacklist_ids(str(concept_dir / "feature_blacklist.txt"))
+    blacklist_ids = set(_load_blacklist_ids(str(concept_dir / "feature_blacklist.txt")))
+    global_root = Path(str(blacklist_root)).expanduser()
+    if not global_root.is_absolute():
+        global_root = REPO_ROOT / global_root
+    global_blacklist = global_root / block_short_name(block) / "feature_blacklist.txt"
+    blacklist_ids.update(_load_blacklist_ids(str(global_blacklist)))
+    raw_feature_ids = _load_topk_feature_ids(rank_csv, top_k)
+    feature_ids = _load_topk_feature_ids(rank_csv, top_k, blacklist_ids=blacklist_ids)
     if blacklist_ids:
-        before = len(feature_ids)
-        feature_ids = [int(fid) for fid in feature_ids if int(fid) not in blacklist_ids]
-        print(f"[{LOG_PREFIX}] block={block} 黑名单过滤: {before} -> {len(feature_ids)} (blacklist={len(blacklist_ids)})")
+        print(f"[{LOG_PREFIX}] block={block} 黑名单过滤后取 topK: {len(raw_feature_ids)} -> {len(feature_ids)} (blacklist={len(blacklist_ids)})")
     if not feature_ids:
         raise ValueError(f"block={block} 过滤后 feature_ids 为空。")
 
@@ -444,7 +451,7 @@ def build_shared_feature_intervention_hook(
 ):
     """构建 SharedSAE 版概念干预 hook。"""
     mode = str(spec.mode).lower()
-    if mode not in {"injection", "ablation", "projected_ablation"}:
+    if mode not in {"ablation", "projected_ablation"}:
         raise ValueError(f"不支持的干预模式: {spec.mode}")
 
     state = {"step": 0, "debug_rows": []}
@@ -691,6 +698,7 @@ def main() -> None:
             top_k=int(intervention_cfg.feature_top_k),
             total_steps=int(steps),
             use_time_weight=bool(intervention_cfg.time.use_weight),
+            blacklist_root=str(args.concept_dict_freq_root),
         )
     coeffs_by_block = {
         block: _scale_coeff_by_step(

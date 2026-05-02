@@ -18,6 +18,8 @@
 
 ## 推荐命令
 
+完整命令索引见 [`../scripts/feature_frequency.md`](../scripts/feature_frequency.md)。
+
 ```bash
 cd /root/cce
 

@@ -4,6 +4,8 @@
 
 ## 两遍流程
 
+完整命令索引见 [`../../scripts/feature_frequency.md`](../../scripts/feature_frequency.md)。
+
 ### 第一遍：只收集基础统计
 
 这一步会跑 prompt-conditioned 轨迹，保存每个 block 的：

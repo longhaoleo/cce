@@ -11,7 +11,7 @@
 补充说明保留在：
 
 - `PLAN.md`
-- `scrips.txt`
+- [`../scripts/training.md`](../scripts/training.md)
 
 ## 常用命令
 

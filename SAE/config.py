@@ -104,6 +104,8 @@ class TrainConfig:
     lr_adapter: float = 2e-4
     lr_time: float = 1e-4
     lr_time_stage3: float = 2e-5
+    time_branch_warmup_start_ratio: float = 0.0
+    time_branch_warmup_ratio: float = 0.0
     lr_spatial: float = 1e-4
     beta1: float = 0.9
     beta2: float = 0.999
@@ -116,6 +118,8 @@ class TrainConfig:
     align_weight_target: float = 5e-2
     align_warmup_ratio: float = 0.1
     decoder_decorr_weight: float = 0.0
+    latent_decorr_weight: float = 0.0
+    latent_decorr_top_k: int = 256
 
     epochs_stage1: float = 1.0
     epochs_stage2: float = 1.0
@@ -207,6 +211,12 @@ class TrainConfig:
             raise ValueError("log_every_steps 必须 > 0")
         if int(self.save_every_steps) < 0:
             raise ValueError("save_every_steps 不能为负数；0 表示关闭中间 checkpoint")
+        if float(self.time_branch_warmup_start_ratio) < 0.0:
+            raise ValueError("time_branch_warmup_start_ratio 不能为负数")
+        if float(self.time_branch_warmup_ratio) < 0.0:
+            raise ValueError("time_branch_warmup_ratio 不能为负数")
+        if int(self.latent_decorr_top_k) < 0:
+            raise ValueError("latent_decorr_top_k 不能为负数；0 表示关闭 latent decorrelation")
 
     def to_dict(self) -> Dict:
         """将配置转换为可序列化字典。

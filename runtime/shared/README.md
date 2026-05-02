@@ -22,6 +22,8 @@
 
 ## 推荐命令
 
+完整命令索引见 [`../../scripts/concept_erasure.md`](../../scripts/concept_erasure.md)。
+
 ### 概念定位
 
 ```bash

@@ -101,11 +101,17 @@ def build_parser() -> argparse.ArgumentParser:
     add_model_args(g_model)
     add_generation_override_args(g_run, prompt_required=False)
 
-    g_score.add_argument("--taris_t_start", type=int, default=1000, help="时间窗口上界（高噪声侧）。")
-    g_score.add_argument("--taris_t_end", type=int, default=0, help="时间窗口下界（低噪声侧）。")
-    g_score.add_argument("--taris_num_steps", type=int, default=50, help="在窗口内均匀采样多少个 step。")
+    g_score.add_argument("--taris_t_start", type=int, default=900, help="时间窗口上界（高噪声侧）。")
+    g_score.add_argument("--taris_t_end", type=int, default=100, help="时间窗口下界（低噪声侧）。")
+    g_score.add_argument("--taris_num_steps", type=int, default=5, help="在窗口内均匀采样多少个 step。")
     g_score.add_argument("--taris_delta", type=float, default=1e-6, help="TARIS 分母平滑项。")
     g_score.add_argument("--taris_top_k", type=int, default=10, help="保存 top-k 概念特征。")
+    g_score.add_argument(
+        "--concept_dict_freq_root",
+        type=str,
+        default="concept_dict_freq",
+        help="全局高频特征 blacklist 根目录。",
+    )
     g_score.add_argument(
         "--taris_score_mode",
         type=str,
@@ -144,12 +150,15 @@ def _truncate_prompts(prompts: Sequence[str], limit: int) -> List[str]:
     return items[: int(limit)]
 
 
-def _resolve_blacklist_ids(*, block: str, out_dir: str) -> set[int]:
+def _resolve_blacklist_ids(*, block: str, out_dir: str, concept_dict_freq_root: str) -> set[int]:
     """合并概念目录黑名单与全局高频特征黑名单。"""
     local_path = os.path.join(out_dir, "feature_blacklist.txt")
-    global_path = os.path.join("concept_dict_freq", block_short_name(str(block)), "feature_blacklist.txt")
+    root = Path(os.path.expanduser(str(concept_dict_freq_root)))
+    if not root.is_absolute():
+        root = Path.cwd() / root
+    global_path = root / block_short_name(str(block)) / "feature_blacklist.txt"
     ids = set(_load_blacklist_ids(local_path))
-    ids.update(_load_blacklist_ids(global_path))
+    ids.update(_load_blacklist_ids(str(global_path)))
     return ids
 
 
@@ -448,7 +457,11 @@ def main() -> None:
             out_dir = os.path.join("concept_dict", block_short_name(str(block)), safe_name(str(concept_name_raw)))
             ensure_dir(out_dir)
 
-            blacklist_ids = _resolve_blacklist_ids(block=str(block), out_dir=out_dir)
+            blacklist_ids = _resolve_blacklist_ids(
+                block=str(block),
+                out_dir=out_dir,
+                concept_dict_freq_root=str(args.concept_dict_freq_root),
+            )
             top_pos_ids, top_pos_vals, top_neg_ids, top_neg_vals = _topk_with_blacklist(
                 scores=scores_primary,
                 top_k=int(args.taris_top_k),

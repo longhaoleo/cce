@@ -12,14 +12,16 @@
 
 ## 模块导航
 
+- [scripts/README.md](scripts/README.md)
+  - 当前主线实验命令索引
+- [scripts/erasure_latest_sae.md](scripts/erasure_latest_sae.md)
+  - 最新 `no stage1` checkpoint 的定位与擦除命令
 - [train/README.md](train/README.md)
   - 训练、smoke、pilot、full run
 - [runtime/shared/README.md](runtime/shared/README.md)
   - Shared 概念定位、单图擦除、batch 擦除的正式运行时
 - [tools/README.md](tools/README.md)
   - Shared prompt-conditioned 高频特征统计 / blacklist
-- [组合擦除.md](<组合擦除.md>)
-  - `bat / man / batman` 组合概念擦除实验说明与命令
 - [research/archive_experiments/README.md](research/archive_experiments/README.md)
   - 旧实验脚本归档，只做参考不参与当前主线
 

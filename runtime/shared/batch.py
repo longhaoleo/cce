@@ -235,6 +235,7 @@ def main() -> None:
                     top_k=int(intervention_cfg.feature_top_k),
                     total_steps=int(steps),
                     use_time_weight=bool(intervention_cfg.time.use_weight),
+                    blacklist_root=str(args.concept_dict_freq_root),
                 )
             coeffs_by_block = {
                 block: _scale_coeff_by_step(

@@ -28,6 +28,7 @@ class LossBreakdown:
     auxk: torch.Tensor
     align: torch.Tensor
     decoder_decorr: torch.Tensor
+    latent_decorr: torch.Tensor
 
 
 def recon_loss(x_hat: torch.Tensor, x_norm: torch.Tensor) -> torch.Tensor:
@@ -112,6 +113,51 @@ def decoder_decorrelation_loss(decoder_weight: torch.Tensor) -> torch.Tensor:
     return torch.mean(offdiag.pow(2))
 
 
+def latent_covariance_decorrelation_loss(
+    z_by_block: Dict[str, torch.Tensor],
+    *,
+    top_k: int,
+) -> torch.Tensor:
+    """对 batch 内最活跃 latent 做协方差去相关。
+
+    这个正则直接惩罚“哪些 feature 在数据上经常一起亮”，比只约束
+    decoder 方向更贴近擦除时的副作用问题。
+    """
+    if not z_by_block:
+        raise ValueError("z_by_block 不能为空")
+    first = next(iter(z_by_block.values()))
+    k = int(top_k)
+    if k <= 0:
+        return first.new_tensor(0.0)
+
+    z_items = [z for z in z_by_block.values() if z.numel() > 0]
+    if not z_items:
+        return first.new_tensor(0.0)
+    z = torch.cat(z_items, dim=0).float()
+    if int(z.shape[0]) < 2 or int(z.shape[1]) < 2:
+        return z.new_tensor(0.0)
+
+    # 只看 batch 内 top-active feature，避免构造完整 n_dirs x n_dirs Gram。
+    activity = z.detach().mean(dim=0)
+    top_n = min(k, int(activity.numel()))
+    vals, idx = torch.topk(activity, k=top_n)
+    idx = idx[vals > 0]
+    if int(idx.numel()) < 2:
+        return z.new_tensor(0.0)
+
+    z_sel = z[:, idx]
+    z_sel = z_sel - z_sel.mean(dim=0, keepdim=True)
+    std = z_sel.pow(2).mean(dim=0).sqrt()
+    valid = std > 1e-6
+    if int(valid.sum().item()) < 2:
+        return z.new_tensor(0.0)
+
+    z_norm = z_sel[:, valid] / std[valid].unsqueeze(0)
+    corr = z_norm.t() @ z_norm / float(max(1, int(z_norm.shape[0])))
+    eye = torch.eye(int(corr.shape[0]), device=corr.device, dtype=corr.dtype)
+    return torch.mean((corr - eye).pow(2))
+
+
 def _pooled_unit(z: torch.Tensor) -> torch.Tensor:
     """对 token latent 做池化并单位化。
 
@@ -131,9 +177,11 @@ def compose_total_loss(
     auxk: torch.Tensor,
     align: torch.Tensor,
     decoder_decorr: torch.Tensor,
+    latent_decorr: torch.Tensor,
     auxk_coef: float,
     align_weight: float,
     decoder_decorr_weight: float,
+    latent_decorr_weight: float,
 ) -> LossBreakdown:
     """组合总损失并返回拆解项。
 
@@ -145,12 +193,26 @@ def compose_total_loss(
     - auxk_coef: AuxK 权重。
     - align_weight: 对齐权重。
     - decoder_decorr_weight: decoder 去相关权重。
+    - latent_decorr_weight: latent 协方差去相关权重。
 
     输出：
     - LossBreakdown：包含 total/recon/auxk/align。
     """
-    total = recon + float(auxk_coef) * auxk + float(align_weight) * align + float(decoder_decorr_weight) * decoder_decorr
-    return LossBreakdown(total=total, recon=recon, auxk=auxk, align=align, decoder_decorr=decoder_decorr)
+    total = (
+        recon
+        + float(auxk_coef) * auxk
+        + float(align_weight) * align
+        + float(decoder_decorr_weight) * decoder_decorr
+        + float(latent_decorr_weight) * latent_decorr
+    )
+    return LossBreakdown(
+        total=total,
+        recon=recon,
+        auxk=auxk,
+        align=align,
+        decoder_decorr=decoder_decorr,
+        latent_decorr=latent_decorr,
+    )
 
 
 def group_forward_losses(
@@ -162,6 +224,8 @@ def group_forward_losses(
     auxk_coef: float,
     align_weight: float,
     decoder_decorr_weight: float = 0.0,
+    latent_decorr_weight: float = 0.0,
+    latent_decorr_top_k: int = 256,
 ) -> LossBreakdown:
     """计算单个 group 的损失。
 
@@ -195,12 +259,15 @@ def group_forward_losses(
     recon = torch.stack(recon_items).mean()
     aux = torch.stack(aux_items).mean() if aux_items else recon.new_tensor(0.0)
     align = align_loss_from_group_latents(z_by_block, mid_block=mid_block, blocks=blocks)
+    latent_decorr = latent_covariance_decorrelation_loss(z_by_block, top_k=int(latent_decorr_top_k))
     return compose_total_loss(
         recon=recon,
         auxk=aux,
         align=align,
         decoder_decorr=recon.new_tensor(0.0),
+        latent_decorr=latent_decorr,
         auxk_coef=auxk_coef,
         align_weight=align_weight,
         decoder_decorr_weight=decoder_decorr_weight,
+        latent_decorr_weight=latent_decorr_weight,
     )

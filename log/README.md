@@ -9,6 +9,7 @@
 
 ## 当前索引
 
+- `2026-05-02_latest_sae_nudity_erasure_assessment.md`：最新 `no stage1` SAE 的 `nudity` 擦除结果记录；生成质量更稳，目标概念可彻底擦除，但副作用过大，图像语义被明显重写
 - `2026-04-30_time_decorr_smoke_v3_assessment.md`：第三轮 smoke 结果，并补充 `path1(low_lr_time)` vs `path2(no_stage1)` 对比，结论是 `no_stage1` 更优，下一步沿 `stage2 + stage3` 多 block 联合训练继续
 - `2026-04-30_time_decorr_smoke_v2_assessment.md`：第二轮 `time_branch + decoder decorrelation` smoke 结果，确认比第一轮略有改善，但 dead feature 仍然过高，暂不建议直接上 full
 - `2026-04-29_combo_concepts_bat_man_batman_feature_assessment.md`：`bat / man / batman` 三个概念的定位强度、跨概念重合、与 `car / dog` 的对比，以及后续组合擦除对照建议
