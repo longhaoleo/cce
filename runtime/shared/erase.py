@@ -185,7 +185,7 @@ def add_intervention_args(
         choices=["ablation", "projected_ablation"],
         help="概念操作模式。",
     )
-    group.add_argument("--int_scale", type=float, default=3000.0, help="全局干预强度。")
+    group.add_argument("--int_scale", type=float, default=9000.0, help="全局干预强度。")
     group.add_argument("--int_feature_top_k", type=int, default=5, help="从 top_positive_features.csv 读取前 K 个特征。")
     group.add_argument(
         "--int_projection_ridge",
@@ -205,7 +205,7 @@ def add_intervention_args(
         default="concept_dict_freq",
         help="全局高频特征 blacklist 根目录，用于擦除前二次过滤。",
     )
-    group.add_argument("--int_t_start", type=int, default=950, help="干预时间窗上界（高噪声侧）；默认收窄到 900。")
+    group.add_argument("--int_t_start", type=int, default=1000, help="干预时间窗上界（高噪声侧）；默认收窄到 900。")
     group.add_argument("--int_t_end", type=int, default=0, help="干预时间窗下界（低噪声侧）；默认收窄到 100。")
     group.add_argument("--int_step_start", type=int, default=-1, help=">=0 时启用 step 下界。")
     group.add_argument("--int_step_end", type=int, default=-1, help=">=0 时启用 step 上界。")

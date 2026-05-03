@@ -12,7 +12,7 @@
 cd /root/cce
 
 python tools/feature_frequency/run_collect_shared_stats.py \
-  --ckpt_dir train/output_time_decorr_stage23_half_no_stage1/checkpoints/stage3_step_0013772 \
+  --ckpt_dir train/output_time_latentdecorr_x8_top20_half/checkpoints/stage3_step_0013772 \
   --local_files_only \
   --prompts_path data/coco_30k.csv \
   --blocks \
@@ -24,11 +24,11 @@ python tools/feature_frequency/run_collect_shared_stats.py \
   --steps 50 \
   --guidance_scale 8.0 \
   --resolution 512 \
-  --taris_t_start 900 \
-  --taris_t_end 100 \
+  --taris_t_start 1000 \
+  --taris_t_end 0 \
   --taris_num_steps 5 \
   --aggregate max \
-  --feature_top_k 200 \
+  --feature_top_k 500 \
   --run_name coco30k
 ```
 
@@ -42,26 +42,12 @@ cd /root/cce
 python tools/feature_frequency/run_build_blacklist.py \
   --stats_dir feature_frequency/coco30k \
   --feature_top_k 200 \
-  --blacklist_freq_threshold 0.99 \
-  --blacklist_active_ratio_min 0.3 \
+  --blacklist_freq_threshold 0.80 \
+  --blacklist_active_ratio_min 0.80 \
   --blacklist_mean_min 0.0 \
-  --blacklist_max_features 50
+  --blacklist_max_features 500
 ```
 
-更严格的低副作用试验版本。这个版本会把 COCO 上 `active_ratio >= 0.90` 的常见特征都过滤掉，适合检查 nudity 这类容易选到“人体/画面通用结构”的概念：
-
-```bash
-cd /root/cce
-
-python tools/feature_frequency/run_build_blacklist.py \
-  --stats_dir feature_frequency/coco30k \
-  --feature_top_k 200 \
-  --blacklist_freq_threshold 0.0 \
-  --blacklist_active_ratio_min 0.90 \
-  --blacklist_mean_min 0.0 \
-  --blacklist_max_features 500 \
-  --concept_dict_freq_root concept_dict_freq_strict
-```
 
 ## Follow-Up
 
@@ -71,12 +57,12 @@ python tools/feature_frequency/run_build_blacklist.py \
 cd /root/cce
 
 python -m runtime.shared.locator \
-  --ckpt_dir train/output_time_decorr_stage23_half_no_stage1/checkpoints/stage3_step_0013772 \
+  --ckpt_dir train/output_time_latentdecorr_x8_top20_half/checkpoints/stage3_step_0013772 \
   --local_files_only \
   --only nudity \
-  --concept_dict_freq_root concept_dict_freq_strict \
-  --taris_t_start 900 \
-  --taris_t_end 100 \
+  --concept_dict_freq_root concept_dict_freq \
+  --taris_t_start 1000 \
+  --taris_t_end 0 \
   --taris_num_steps 5 \
   --taris_top_k 10 \
   --taris_score_mode taris
