@@ -1,8 +1,16 @@
-# Core dependencies for the current SDXL + WSAE concept erasure workflow.
-# This covers Shared training, Shared concept locating, Shared erasure,
-# and prompt-conditioned Shared blacklist mining.
+# Core dependencies for the current SDXL + SharedSAE workflow.
+#
+# Covers:
+# - SharedSAE training
+# - prompt-conditioned feature-frequency mining
+# - concept locating
+# - single/batch concept erasure
+# - pixel/diag evaluation
+#
+# Optional heavy evaluation metrics live in requirements-eval.txt.
 
 diffusers>=0.34.0
+huggingface_hub>=0.27.0
 matplotlib>=3.10.0
 numpy>=2.2.0
 Pillow>=11.0.0

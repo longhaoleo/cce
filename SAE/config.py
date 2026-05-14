@@ -46,7 +46,7 @@ class TrainConfig:
     - block 与空间规格：选择训练哪些 block，以及预期的特征图大小；
     - SAE 结构：字典规模、top-k、AuxK、adapter/time/spatial 支路；
     - 优化参数：学习率、梯度裁剪、权重衰减；
-    - 训练阶段：stage1/2/3/4 的开关、epoch、token 预算。
+    - 训练阶段：stage2/3 的开关、epoch、token 预算。
 
     这样一来，一次实验的“结构”和“流程”都可以被完整记录到 checkpoint 里。
     """
@@ -72,7 +72,6 @@ class TrainConfig:
 
     validation_prompts: int = 1000
     stage2_train_prompts: int = 20000
-    stage1_train_prompts: int = 5000
     calibration_prompts: int = 1000
     shard_prompts: int = 250
     split_seed: int = 2026
@@ -117,21 +116,15 @@ class TrainConfig:
     auxk_coef: float = 1.0 / 32.0
     align_weight_target: float = 5e-2
     align_warmup_ratio: float = 0.1
-    decoder_decorr_weight: float = 0.0
     latent_decorr_weight: float = 0.0
     latent_decorr_top_k: int = 256
 
-    epochs_stage1: float = 1.0
     epochs_stage2: float = 1.0
     epochs_stage3: float = 0.1
-    epochs_stage4: float = 0.02
-    run_stage1: bool = True
     run_stage3: bool = True
-    run_stage4: bool = False
 
     tokens_per_step_target: int = 4096
-    group_bs_stage1: int = 0
-    group_bs_stage2: int = 0
+    group_bs: int = 0
 
     max_prompts_debug: int = 0
     save_every_steps: int = 200
@@ -161,7 +154,7 @@ class TrainConfig:
         这里主要拦三类问题：
 
         - 明显不可能的结构参数：如 `steps <= 0`、`top_k > n_dirs`；
-        - 会破坏训练设定的采样/切分参数：如 stage1 prompt 数大于 stage2；
+        - 会破坏训练设定的采样/切分参数；
         - 与当前主线假设冲突的 block / mode 设置。
 
         训练一开始就做这些检查，可以避免跑了很久才因为配置错误中断。
@@ -198,14 +191,10 @@ class TrainConfig:
             raise ValueError("validation_prompts 必须 > 0")
         if int(self.stage2_train_prompts) <= 0:
             raise ValueError("stage2_train_prompts 必须 > 0")
-        if int(self.stage1_train_prompts) <= 0:
-            raise ValueError("stage1_train_prompts 必须 > 0")
-        if int(self.stage1_train_prompts) > int(self.stage2_train_prompts):
-            raise ValueError("stage1_train_prompts 不能大于 stage2_train_prompts")
 
         if int(self.tokens_per_step_target) <= 0:
             raise ValueError("tokens_per_step_target 必须 > 0")
-        if int(self.group_bs_stage1) < 0 or int(self.group_bs_stage2) < 0:
+        if int(self.group_bs) < 0:
             raise ValueError("group_bs 不能为负数；0 表示按真实 hw 自动推导")
         if int(self.log_every_steps) <= 0:
             raise ValueError("log_every_steps 必须 > 0")

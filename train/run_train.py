@@ -69,7 +69,7 @@ EXPERIMENT_PRESETS = (
 def parse_args() -> argparse.Namespace:
 
     ap = argparse.ArgumentParser(
-        description="Shared SAE 主训练入口（stage1->stage3，stage4 可选探针）",
+        description="Shared SAE 主训练入口（stage2 -> stage3）",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
@@ -174,12 +174,6 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=20000,
         help="Stage2/Stage3 训练集大小。",
-    )
-    g_data.add_argument(
-        "--stage1_train_prompts",
-        type=int,
-        default=5000,
-        help="Stage1 预热集大小（作为 Stage2 训练集子集）。",
     )
     g_data.add_argument(
         "--calibration_prompts",
@@ -304,40 +298,10 @@ def parse_args() -> argparse.Namespace:
         help="输入适配器 LoRA alpha（缩放系数分子）。",
     )
     g_adapter.add_argument(
-        "--block_out_rank",
-        type=int,
-        default=16,
-        help="输出适配器 LoRA rank（主要用于 stage4 验证）。",
-    )
-    g_adapter.add_argument(
-        "--block_out_alpha",
-        type=int,
-        default=16,
-        help="输出适配器 LoRA alpha（主要用于 stage4 验证）。",
-    )
-    g_adapter.add_argument(
         "--use_block_in_adapter",
         action=argparse.BooleanOptionalAction,
         default=True,
         help="是否启用 block_in_adapter。",
-    )
-    g_adapter.add_argument(
-        "--use_block_out_adapter",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="是否启用 block_out_adapter（v1 默认关闭，仅 stage4 打开验证）。",
-    )
-    g_adapter.add_argument(
-        "--run_stage4",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="是否在主训练流程末尾追加 stage4 out_adapter 探针；默认关闭。",
-    )
-    g_adapter.add_argument(
-        "--run_stage1",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="是否执行 stage1 预热；做四层 baseline 时可关闭。",
     )
     g_adapter.add_argument(
         "--run_stage3",
@@ -365,7 +329,7 @@ def parse_args() -> argparse.Namespace:
         "--lr_time",
         type=float,
         default=1e-4,
-        help="stage1/2 中 time branch 学习率。",
+        help="stage2 中 time branch 学习率。",
     )
     g_opt.add_argument(
         "--lr_time_stage3",
@@ -386,12 +350,6 @@ def parse_args() -> argparse.Namespace:
         help="Stage2 中 align 权重 warmup 占比。",
     )
     g_opt.add_argument(
-        "--decoder_decorr_weight",
-        type=float,
-        default=0.0,
-        help="decoder 去相关正则权重；>0 时惩罚字典方向间的非对角相关性。",
-    )
-    g_opt.add_argument(
         "--latent_decorr_weight",
         type=float,
         default=0.0,
@@ -410,16 +368,10 @@ def parse_args() -> argparse.Namespace:
         help="用于自动推导 group batch size 的目标 token 数。",
     )
     g_opt.add_argument(
-        "--group_bs_stage1",
+        "--group_bs",
         type=int,
         default=0,
-        help="Stage1 的 group batch size；传 0 表示按真实 hw 自动推导。",
-    )
-    g_opt.add_argument(
-        "--group_bs_stage2",
-        type=int,
-        default=0,
-        help="Stage2/3/4 的 group batch size；传 0 表示按真实 hw 自动推导。",
+        help="Stage2/3 的 group batch size；传 0 表示按真实 hw 自动推导。",
     )
     return ap.parse_args()
 
@@ -450,7 +402,6 @@ def build_config(args: argparse.Namespace) -> TrainConfig:
         max_prompts_debug=int(args.max_prompts_debug),
         validation_prompts=int(args.validation_prompts),
         stage2_train_prompts=int(args.stage2_train_prompts),
-        stage1_train_prompts=int(args.stage1_train_prompts),
         calibration_prompts=int(args.calibration_prompts),
         num_step_buckets=int(args.num_step_buckets),
         shard_prompts=int(args.shard_prompts),
@@ -472,21 +423,14 @@ def build_config(args: argparse.Namespace) -> TrainConfig:
         lr_time_stage3=float(args.lr_time_stage3),
         align_weight_target=float(args.align_weight_target),
         align_warmup_ratio=float(args.align_warmup_ratio),
-        decoder_decorr_weight=float(args.decoder_decorr_weight),
         latent_decorr_weight=float(args.latent_decorr_weight),
         latent_decorr_top_k=int(args.latent_decorr_top_k),
         tokens_per_step_target=int(args.tokens_per_step_target),
-        group_bs_stage1=int(args.group_bs_stage1),
-        group_bs_stage2=int(args.group_bs_stage2),
+        group_bs=int(args.group_bs),
         block_in_rank=int(args.block_in_rank),
         block_in_alpha=int(args.block_in_alpha),
-        block_out_rank=int(args.block_out_rank),
-        block_out_alpha=int(args.block_out_alpha),
         use_block_in_adapter=bool(args.use_block_in_adapter),
-        use_block_out_adapter=bool(args.use_block_out_adapter),
-        run_stage1=bool(args.run_stage1),
         run_stage3=bool(args.run_stage3),
-        run_stage4=bool(args.run_stage4),
         log_every_steps=int(args.log_every_steps),
         save_every_steps=int(args.save_every_steps),
     )
@@ -511,9 +455,7 @@ def apply_experiment_preset(cfg: TrainConfig, preset: str) -> None:
     if name == "custom":
         return
     if name == "exp_a_shared_recon":
-        cfg.run_stage1 = False
         cfg.run_stage3 = False
-        cfg.run_stage4 = False
         cfg.align_weight_target = 0.0
         cfg.use_block_in_adapter = False
         cfg.use_block_out_adapter = False
@@ -521,9 +463,7 @@ def apply_experiment_preset(cfg: TrainConfig, preset: str) -> None:
         cfg.use_spatial_branch = False
         return
     if name == "exp_b_shared_align":
-        cfg.run_stage1 = False
         cfg.run_stage3 = False
-        cfg.run_stage4 = False
         cfg.align_weight_target = 5e-2
         cfg.use_block_in_adapter = False
         cfg.use_block_out_adapter = False
@@ -531,9 +471,7 @@ def apply_experiment_preset(cfg: TrainConfig, preset: str) -> None:
         cfg.use_spatial_branch = False
         return
     if name == "exp_c_adapter_align":
-        cfg.run_stage1 = False
         cfg.run_stage3 = True
-        cfg.run_stage4 = False
         cfg.align_weight_target = 5e-2
         cfg.use_block_in_adapter = True
         cfg.use_block_out_adapter = False
@@ -541,9 +479,7 @@ def apply_experiment_preset(cfg: TrainConfig, preset: str) -> None:
         cfg.use_spatial_branch = False
         return
     if name == "exp_d_full":
-        cfg.run_stage1 = False
         cfg.run_stage3 = True
-        cfg.run_stage4 = False
         cfg.align_weight_target = 5e-2
         cfg.use_block_in_adapter = True
         cfg.use_block_out_adapter = False
@@ -590,7 +526,6 @@ def main() -> None:
         split_seed=cfg.split_seed,
         validation_prompts=cfg.validation_prompts,
         stage2_train_prompts=cfg.stage2_train_prompts,
-        stage1_train_prompts=cfg.stage1_train_prompts,
         calibration_prompts=cfg.calibration_prompts,
     )
     print(f"[train] split 统计: {summarize_split(split)}")
@@ -650,14 +585,9 @@ def main() -> None:
         norm_scale_by_block=norm_scale_by_block,
     )
 
-    stages = []
-    if bool(cfg.run_stage1):
-        stages.append(("stage1", split["stage1"]))
-    stages.append(("stage2", split["stage2"]))
+    stages = [("stage2", split["stage2"])]
     if bool(cfg.run_stage3):
         stages.append(("stage3", split["stage2"]))
-    if bool(cfg.run_stage4):
-        stages.append(("stage4", split["stage2"]))
 
     stage_results = []
     for stage, records in stages:

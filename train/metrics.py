@@ -30,11 +30,9 @@ class StepMetric:
     loss_recon: float
     loss_auxk: float
     loss_align: float
-    loss_decoder_decorr: float
     loss_latent_decorr: float
     loss_auxk_term: float
     loss_align_term: float
-    loss_decoder_decorr_term: float
     loss_latent_decorr_term: float
     align_weight: float
     time_branch_scale: float
@@ -145,7 +143,6 @@ def plot_loss_curves(output_root: str) -> Dict[str, str]:
     recon = [float(r["loss_recon"]) for r in rows]
     auxk = [float(r["loss_auxk"]) for r in rows]
     align = [float(r["loss_align"]) for r in rows]
-    decoder_decorr = [float(r.get("loss_decoder_decorr", 0.0)) for r in rows]
     latent_decorr = [float(r.get("loss_latent_decorr", 0.0)) for r in rows]
     align_w = [float(r["align_weight"]) for r in rows]
     time_scale = [float(r.get("time_branch_scale", 1.0)) for r in rows]
@@ -159,7 +156,6 @@ def plot_loss_curves(output_root: str) -> Dict[str, str]:
     plt.plot(steps, recon, label="loss_recon", linewidth=1.4)
     plt.plot(steps, auxk, label="loss_auxk", linewidth=1.4)
     plt.plot(steps, align, label="loss_align", linewidth=1.4)
-    plt.plot(steps, decoder_decorr, label="loss_decoder_decorr", linewidth=1.2)
     plt.plot(steps, latent_decorr, label="loss_latent_decorr", linewidth=1.2)
     plt.xlabel("global_step")
     plt.ylabel("loss")

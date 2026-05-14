@@ -13,6 +13,7 @@
 /concept_dict/
 /concept_dict_freq/
 /feature_frequency/
+/evaluation/results/
 /eval_original/
 /eval_erased/
 /train/output*/

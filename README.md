@@ -22,6 +22,8 @@
   - Shared 概念定位、单图擦除、batch 擦除的正式运行时
 - [tools/README.md](tools/README.md)
   - Shared prompt-conditioned 高频特征统计 / blacklist
+- [evaluation/README.md](evaluation/README.md)
+  - Shared batch 擦除结果的 pixel / diag / CLIP / LPIPS / DreamSim 量化评测
 - [research/archive_experiments/README.md](research/archive_experiments/README.md)
   - 旧实验脚本归档，只做参考不参与当前主线
 
@@ -36,6 +38,7 @@ cce/
 ├─ feature_frequency/     # 已生成的基础统计 run 目录
 ├─ train/                 # SharedSAE 训练
 ├─ tools/                 # Shared 辅助工具与脚本源码
+├─ evaluation/            # Shared batch 擦除量化评测
 ├─ target_concept_dict/   # 概念定义输入
 ├─ concept_dict/          # 概念定位输出
 ├─ concept_dict_freq/     # 全局 blacklist 输出
@@ -49,6 +52,54 @@ cce/
 ### 1. 训练或指定一个 Shared checkpoint
 
 训练命令见 [train/README.md](train/README.md)。
+
+### 1.5. 下载评测权重（可选）
+
+如果要跑 `evaluation.eval_clip`，先把 CLIP 权重下载到统一本地目录：
+
+```bash
+cd /root/cce
+
+python download_clip.py
+```
+
+默认保存到：
+
+```text
+/root/autodl-tmp/models/clip-vit-base-patch32
+```
+
+评测脚本会按统一规则读取 CLIP：
+
+```text
+1. --clip_model 显式传入的路径或 HuggingFace id
+2. CCE_CLIP_MODEL 环境变量
+3. /root/autodl-tmp/models/clip-vit-base-patch32
+4. openai/clip-vit-base-patch32
+```
+
+如果要跑 `evaluation.eval_lpips`，预先下载 LPIPS/AlexNet 权重：
+
+```bash
+cd /root/cce
+
+python download_lpips.py
+```
+
+默认使用 Torch 缓存目录：
+
+```text
+/root/autodl-tmp/models/torch
+```
+
+评测脚本会按统一规则读取 Torch 缓存：
+
+```text
+1. --torch_home 显式传入的路径
+2. CCE_TORCH_HOME 环境变量
+3. TORCH_HOME 环境变量
+4. /root/autodl-tmp/models/torch
+```
 
 ### 2. 先收集基础统计，再生成全局 blacklist（可选但推荐）
 
@@ -140,4 +191,16 @@ python -m runtime.shared.batch \
 
 ```bash
 pip install -r requirements.txt
+```
+
+如果要跑 LPIPS / DreamSim 等可选评估指标：
+
+```bash
+pip install -r requirements-eval.txt
+```
+
+旧实验脚本才需要：
+
+```bash
+pip install -r requirements-legacy.txt
 ```

@@ -13,7 +13,7 @@ from typing import Dict, Iterable, List, Sequence
 import torch
 from tqdm.auto import tqdm
 
-from .losses import LossBreakdown, decoder_decorrelation_loss, group_forward_losses
+from .losses import LossBreakdown, group_forward_losses
 from .metrics import MetricsWriter, StepMetric
 from .prompt_data import PromptRecord, iter_prompt_shards
 from .sampler import GroupSample, SDXLGroupSampler
@@ -46,7 +46,6 @@ class StageResult:
     mean_recon: float
     mean_auxk: float
     mean_align: float
-    mean_decoder_decorr: float
     mean_latent_decorr: float
     elapsed_sec: float
     observed_hw: tuple[int, int] | None = None
@@ -61,7 +60,6 @@ class BatchDiagnostics:
 
     loss_auxk_term: float
     loss_align_term: float
-    loss_decoder_decorr_term: float
     loss_latent_decorr_term: float
     time_branch_scale: float
     latent_active_frac: float
@@ -130,7 +128,7 @@ class SharedSAETrainer:
         """按阶段构建优化器。
 
         输入：
-        - stage: `stage1|stage2|stage3|stage4`。
+        - stage: `stage2|stage3`。
 
         输出：
         - torch.optim.Optimizer：含多参数组学习率的 Adam 优化器。
@@ -147,11 +145,6 @@ class SharedSAETrainer:
             lr_adapter = 1e-4
             lr_time = float(self.cfg.lr_time_stage3)
             lr_spatial = 2e-5
-        if stage == "stage4":
-            lr_shared = 0.0
-            lr_time = 0.0
-            lr_spatial = 0.0
-
         param_groups = []
         if groups["shared"]:
             param_groups.append({"params": groups["shared"], "lr": lr_shared, "name": "shared"})
@@ -206,8 +199,6 @@ class SharedSAETrainer:
         输出：
         - float：本 step 使用的 `align_weight`。
         """
-        if stage == "stage1":
-            return 0.0
         if stage == "stage2":
             target = float(self.cfg.align_weight_target)
             warm_ratio = max(1e-6, float(self.cfg.align_warmup_ratio))
@@ -223,9 +214,7 @@ class SharedSAETrainer:
         """按阶段进度渐进打开 time branch。"""
         if not bool(self.cfg.use_time_branch):
             return 0.0
-        if stage == "stage1":
-            return 0.0
-        if stage in ("stage3", "stage4"):
+        if stage == "stage3":
             return 1.0
 
         start_ratio = float(self.cfg.time_branch_warmup_start_ratio)
@@ -248,8 +237,6 @@ class SharedSAETrainer:
         输出：
         - List[str]：当前阶段参与训练的 block。
         """
-        if stage == "stage1":
-            return [self.cfg.mid_block]
         return list(self.cfg.blocks)
 
     def _extract_groups_for_shard(self, shard_records: Sequence[PromptRecord], blocks: Sequence[str]) -> List[GroupSample]:
@@ -299,7 +286,7 @@ class SharedSAETrainer:
         group_losses: List[LossBreakdown] = []
         total_latents = 0
         total_active = 0
-        use_out_adapter = stage == "stage4"
+        use_out_adapter = False
 
         for g in batch_groups:
             cache_by_block = {}
@@ -340,8 +327,6 @@ class SharedSAETrainer:
             group_losses.append(loss)
 
         total = torch.stack([x.total for x in group_losses]).mean()
-        decoder_decorr = decoder_decorrelation_loss(self.model.decoder.weight)
-        total = total + float(self.cfg.decoder_decorr_weight) * decoder_decorr
         total.backward()
 
         if bool(self.cfg.decoder_unit_norm):
@@ -356,12 +341,10 @@ class SharedSAETrainer:
         auxk = torch.stack([x.auxk for x in group_losses]).mean().detach()
         align = torch.stack([x.align for x in group_losses]).mean().detach()
         latent_decorr = torch.stack([x.latent_decorr for x in group_losses]).mean().detach()
-        decoder_decorr_detached = decoder_decorr.detach()
         total_detached = total.detach()
         diagnostics = BatchDiagnostics(
             loss_auxk_term=float(float(self.cfg.auxk_coef) * float(auxk)),
             loss_align_term=float(float(align_weight) * float(align)),
-            loss_decoder_decorr_term=float(float(self.cfg.decoder_decorr_weight) * float(decoder_decorr_detached)),
             loss_latent_decorr_term=float(float(self.cfg.latent_decorr_weight) * float(latent_decorr)),
             time_branch_scale=float(time_branch_scale),
             latent_active_frac=float(total_active / max(1, total_latents)),
@@ -374,7 +357,6 @@ class SharedSAETrainer:
             recon=recon,
             auxk=auxk,
             align=align,
-            decoder_decorr=decoder_decorr_detached,
             latent_decorr=latent_decorr,
         ), diagnostics
 
@@ -389,7 +371,7 @@ class SharedSAETrainer:
         输出：
         - int：配置值，或按 `tokens_per_step_target` 自动推导的 batch size。
         """
-        cfg_bs = int(self.cfg.group_bs_stage1) if stage == "stage1" else int(self.cfg.group_bs_stage2)
+        cfg_bs = int(self.cfg.group_bs)
         if cfg_bs > 0:
             return cfg_bs
         tokens_per_group = int(n_blocks) * int(hw[0]) * int(hw[1])
@@ -416,7 +398,7 @@ class SharedSAETrainer:
         """执行单个训练阶段。
 
         输入：
-        - stage: `stage1|stage2|stage3|stage4`。
+        - stage: `stage2|stage3`。
         - stage_records: 该阶段要使用的 prompt 列表。
 
         输出：
@@ -425,7 +407,7 @@ class SharedSAETrainer:
         t0 = time.time()
         blocks = self._stage_blocks(stage)
         set_stage_trainable(self.model, stage)
-        self.model.use_block_out_adapter = stage == "stage4"
+        self.model.use_block_out_adapter = False
 
         optimizer = self._build_optimizer(stage)
         self.model.train()
@@ -433,10 +415,8 @@ class SharedSAETrainer:
         expanded_records = self._expand_stage_records(
             stage_records,
             {
-                "stage1": float(self.cfg.epochs_stage1),
                 "stage2": float(self.cfg.epochs_stage2),
                 "stage3": float(self.cfg.epochs_stage3),
-                "stage4": float(self.cfg.epochs_stage4),
             }[stage],
         )
 
@@ -467,7 +447,7 @@ class SharedSAETrainer:
                 if not logged_group_budget:
                     tokens_per_group = int(len(blocks) * int(hw[0]) * int(hw[1]))
                     tokens_per_step = int(tokens_per_group * gbs)
-                    cfg_bs = int(self.cfg.group_bs_stage1) if stage == "stage1" else int(self.cfg.group_bs_stage2)
+                    cfg_bs = int(self.cfg.group_bs)
                     auto_enabled = cfg_bs <= 0
                     suggested_gbs = max(1, int(self.cfg.tokens_per_step_target) // max(1, tokens_per_group))
                     print(
@@ -510,11 +490,9 @@ class SharedSAETrainer:
                             loss_recon=float(loss.recon),
                             loss_auxk=float(loss.auxk),
                             loss_align=float(loss.align),
-                            loss_decoder_decorr=float(loss.decoder_decorr),
                             loss_latent_decorr=float(loss.latent_decorr),
                             loss_auxk_term=float(diagnostics.loss_auxk_term),
                             loss_align_term=float(diagnostics.loss_align_term),
-                            loss_decoder_decorr_term=float(diagnostics.loss_decoder_decorr_term),
                             loss_latent_decorr_term=float(diagnostics.loss_latent_decorr_term),
                             align_weight=float(align_w),
                             time_branch_scale=float(diagnostics.time_branch_scale),
@@ -534,11 +512,9 @@ class SharedSAETrainer:
                             f"recon={float(loss.recon):.6f} "
                             f"auxk={float(loss.auxk):.6f} "
                             f"align={float(loss.align):.6f} "
-                            f"decorr={float(loss.decoder_decorr):.6f} "
                             f"latent_decorr={float(loss.latent_decorr):.6f} "
                             f"auxk_term={diagnostics.loss_auxk_term:.6f} "
                             f"align_term={diagnostics.loss_align_term:.6f} "
-                            f"decorr_term={diagnostics.loss_decoder_decorr_term:.6f} "
                             f"latent_decorr_term={diagnostics.loss_latent_decorr_term:.6f} "
                             f"active={diagnostics.latent_active_frac:.4f} "
                             f"dead={diagnostics.dead_feature_frac:.4f} "
@@ -565,10 +541,9 @@ class SharedSAETrainer:
             recon = float(torch.stack([x.recon for x in all_losses]).mean().item())
             auxk = float(torch.stack([x.auxk for x in all_losses]).mean().item())
             align = float(torch.stack([x.align for x in all_losses]).mean().item())
-            decoder_decorr = float(torch.stack([x.decoder_decorr for x in all_losses]).mean().item())
             latent_decorr = float(torch.stack([x.latent_decorr for x in all_losses]).mean().item())
         else:
-            total = recon = auxk = align = decoder_decorr = latent_decorr = 0.0
+            total = recon = auxk = align = latent_decorr = 0.0
 
         result = StageResult(
             stage=stage,
@@ -577,7 +552,6 @@ class SharedSAETrainer:
             mean_recon=recon,
             mean_auxk=auxk,
             mean_align=align,
-            mean_decoder_decorr=decoder_decorr,
             mean_latent_decorr=latent_decorr,
             elapsed_sec=float(time.time() - t0),
             observed_hw=observed_hw,
@@ -594,7 +568,6 @@ class SharedSAETrainer:
                 "mean_recon": float(result.mean_recon),
                 "mean_auxk": float(result.mean_auxk),
                 "mean_align": float(result.mean_align),
-                "mean_decoder_decorr": float(result.mean_decoder_decorr),
                 "mean_latent_decorr": float(result.mean_latent_decorr),
                 "elapsed_sec": float(result.elapsed_sec),
                 "global_step": int(self.global_step),
@@ -628,7 +601,7 @@ class SharedSAETrainer:
         was_training = self.model.training
         self.model.eval()
         blocks = self._stage_blocks(stage)
-        use_out_adapter = stage == "stage4"
+        use_out_adapter = False
         recon_items: List[torch.Tensor] = []
         align_items: List[torch.Tensor] = []
         seen = 0

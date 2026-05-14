@@ -1,0 +1,16 @@
+-r requirements.txt
+
+# Optional quantitative evaluation dependencies.
+#
+# Install this when you want to run:
+# - evaluation.eval_clip
+# - evaluation.eval_lpips
+# - evaluation.eval_dreamsim
+#
+# CLIP uses transformers from requirements.txt. LPIPS uses TorchVision/AlexNet
+# weights cached by download_lpips.py. DreamSim downloads its own pretrained
+# weights unless already cached by the package.
+
+lpips==0.1.4
+torchvision>=0.19.0
+dreamsim==0.2.1

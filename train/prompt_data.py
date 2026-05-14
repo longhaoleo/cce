@@ -70,7 +70,6 @@ def split_prompt_records(
     split_seed: int,
     validation_prompts: int,
     stage2_train_prompts: int,
-    stage1_train_prompts: int,
     calibration_prompts: int,
 ) -> Dict[str, List[PromptRecord]]:
     """按计划规则划分数据集。
@@ -80,11 +79,10 @@ def split_prompt_records(
     - split_seed: 划分随机种子（保证可复现）。
     - validation_prompts: 验证集数量，必须与训练严格不重叠。
     - stage2_train_prompts: Stage2/3 训练集大小。
-    - stage1_train_prompts: Stage1 训练集大小，作为 Stage2 子集。
     - calibration_prompts: 校准集大小，可与训练集重叠。
 
     输出：
-    - Dict[str, List[PromptRecord]]：包含 `validation/stage2/stage1/calibration/train_pool`。
+    - Dict[str, List[PromptRecord]]：包含 `validation/stage2/calibration/train_pool`。
     """
     if len(records) < int(validation_prompts) + int(stage2_train_prompts):
         raise ValueError("prompt 总量不足以切分 validation + stage2_train")
@@ -97,14 +95,12 @@ def split_prompt_records(
     train_pool = shuffled[int(validation_prompts) :]
 
     stage2 = train_pool[: int(stage2_train_prompts)]
-    stage1 = stage2[: int(stage1_train_prompts)]
     calibration = train_pool[: int(calibration_prompts)]
 
     return {
         "validation": list(validation),
         "train_pool": list(train_pool),
         "stage2": list(stage2),
-        "stage1": list(stage1),
         "calibration": list(calibration),
     }
 
@@ -154,4 +150,3 @@ def summarize_split(split: Dict[str, Sequence[PromptRecord]]) -> Dict[str, int]:
     - Dict[str, int]：每个切分名称对应的样本数量。
     """
     return {k: len(v) for k, v in split.items()}
-

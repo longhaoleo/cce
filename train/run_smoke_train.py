@@ -71,7 +71,6 @@ def parse_args() -> argparse.Namespace:
 
     ap.add_argument("--validation_prompts", type=int, default=20, help="验证集大小。")
     ap.add_argument("--stage2_train_prompts", type=int, default=80, help="Stage2/3 训练集大小。")
-    ap.add_argument("--stage1_train_prompts", type=int, default=20, help="Stage1 训练集大小。")
     ap.add_argument("--calibration_prompts", type=int, default=20, help="归一化校准集大小。")
     ap.add_argument("--num_step_buckets", type=int, default=2, help="每条 prompt 抽样时间桶数量。")
     ap.add_argument("--shard_prompts", type=int, default=10, help="每个 shard 的 prompt 数。")
@@ -90,25 +89,12 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--align_weight_target", type=float, default=5e-2, help="align 目标权重。")
     ap.add_argument("--align_warmup_ratio", type=float, default=0.1, help="align warmup 占比。")
     ap.add_argument("--tokens_per_step_target", type=int, default=4096, help="自动推导 group_bs 的目标 token 数。")
-    ap.add_argument("--group_bs_stage1", type=int, default=0, help="Stage1 group batch size；0 表示自动推导。")
-    ap.add_argument("--group_bs_stage2", type=int, default=0, help="Stage2/3/4 group batch size；0 表示自动推导。")
-    ap.add_argument(
-        "--run_stage1",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="是否执行 stage1 预热；默认开启。",
-    )
+    ap.add_argument("--group_bs", type=int, default=0, help="Stage2/3 group batch size；0 表示自动推导。")
     ap.add_argument(
         "--run_stage3",
         action=argparse.BooleanOptionalAction,
         default=True,
         help="是否执行 stage3 微调；默认开启。",
-    )
-    ap.add_argument(
-        "--run_stage4",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="是否在 smoke 里追加 stage4 out_adapter 探针；默认关闭。",
     )
     ap.add_argument(
         "--use_time_branch",
@@ -194,8 +180,6 @@ def build_train_command(args: argparse.Namespace) -> List[str]:
         str(int(args.validation_prompts)),
         "--stage2_train_prompts",
         str(int(args.stage2_train_prompts)),
-        "--stage1_train_prompts",
-        str(int(args.stage1_train_prompts)),
         "--calibration_prompts",
         str(int(args.calibration_prompts)),
         "--num_step_buckets",
@@ -219,13 +203,9 @@ def build_train_command(args: argparse.Namespace) -> List[str]:
         str(float(args.align_warmup_ratio)),
         "--tokens_per_step_target",
         str(int(args.tokens_per_step_target)),
-        "--group_bs_stage1",
-        str(int(args.group_bs_stage1)),
-        "--group_bs_stage2",
-        str(int(args.group_bs_stage2)),
-        "--run_stage1" if bool(args.run_stage1) else "--no-run_stage1",
+        "--group_bs",
+        str(int(args.group_bs)),
         "--run_stage3" if bool(args.run_stage3) else "--no-run_stage3",
-        "--run_stage4" if bool(args.run_stage4) else "--no-run_stage4",
         "--use_time_branch" if bool(args.use_time_branch) else "--no-use_time_branch",
         "--time_branch_mode",
         str(args.time_branch_mode),

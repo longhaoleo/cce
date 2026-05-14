@@ -185,8 +185,8 @@ def add_intervention_args(
         choices=["ablation", "projected_ablation"],
         help="概念操作模式。",
     )
-    group.add_argument("--int_scale", type=float, default=9000.0, help="全局干预强度。")
-    group.add_argument("--int_feature_top_k", type=int, default=5, help="从 top_positive_features.csv 读取前 K 个特征。")
+    group.add_argument("--int_scale", type=float, default=5000.0, help="全局干预强度。")
+    group.add_argument("--int_feature_top_k", type=int, default=10, help="从 top_positive_features.csv 读取前 K 个特征。")
     group.add_argument(
         "--int_projection_ridge",
         type=float,

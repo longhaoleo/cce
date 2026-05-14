@@ -594,18 +594,14 @@ def set_stage_trainable(model: SharedSAE, stage: str) -> None:
 
     当前阶段策略大意是：
 
-    - `stage1`
-      只让共享主干和时空分支先学出基本重建
     - `stage2`
-      再放开 input adapter，学习跨 block 对齐
+      放开共享主干、时空分支和 input adapter，学习跨 block 对齐
     - `stage3`
-      在前两者基础上低学习率联合微调
-    - `stage4`
-      只给 output adapter 作为探针式后续实验
+      在 stage2 基础上低学习率联合微调
 
     这样做是为了避免一上来所有模块一起学，导致责任边界太混。
     """
-    valid = {"stage1", "stage2", "stage3", "stage4"}
+    valid = {"stage2", "stage3"}
     if stage not in valid:
         raise ValueError(f"未知 stage: {stage}")
 
@@ -614,15 +610,15 @@ def set_stage_trainable(model: SharedSAE, stage: str) -> None:
 
     for name, p in model.named_parameters():
         if name.startswith(("encoder.", "decoder.", "pre_bias", "latent_bias")):
-            p.requires_grad = stage in {"stage1", "stage2", "stage3"}
+            p.requires_grad = True
 
     for p in model.time_branch.parameters():
-        p.requires_grad = bool(model.use_time_branch) and stage in {"stage1", "stage2", "stage3"}
+        p.requires_grad = bool(model.use_time_branch)
     for p in model.spatial_branch.parameters():
-        p.requires_grad = bool(model.use_spatial_branch) and stage in {"stage1", "stage2", "stage3"}
+        p.requires_grad = bool(model.use_spatial_branch)
 
     for p in model.in_adapters.parameters():
-        p.requires_grad = stage in {"stage2", "stage3"}
+        p.requires_grad = True
 
     for p in model.out_adapters.parameters():
-        p.requires_grad = stage in {"stage4"}
+        p.requires_grad = False

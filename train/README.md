@@ -27,7 +27,6 @@ python train/run_smoke_train.py \
   --local_files_only \
   --validation_prompts 50 \
   --stage2_train_prompts 500 \
-  --stage1_train_prompts 100 \
   --calibration_prompts 100 \
   --experiment_preset "$PRESET"
 ```
@@ -44,7 +43,6 @@ python train/run_train.py \
   --local_files_only \
   --validation_prompts 200 \
   --stage2_train_prompts 2000 \
-  --stage1_train_prompts 500 \
   --calibration_prompts 200 \
   --num_step_buckets 5 \
   --shard_prompts 100 \
@@ -64,7 +62,6 @@ python train/run_train.py \
   --steps 50 \
   --validation_prompts 1000 \
   --stage2_train_prompts 20000 \
-  --stage1_train_prompts 5000 \
   --calibration_prompts 1000 \
   --num_step_buckets 5 \
   --shard_prompts 250 \

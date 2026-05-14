@@ -1,16 +1,15 @@
 -r requirements.txt
 
-# Optional dependencies for legacy evaluation / training scripts.
-# Install this only if you still need files under `evalscripts/`, `trainscripts/`,
+# Optional dependencies for archived / historical scripts.
+#
+# Do not install this for the current SharedSAE mainline unless you explicitly
+# need old files under research/archive_experiments, evalscripts, trainscripts,
 # or the historical SAE dataset iterator.
 
-dreamsim==0.2.1
 imageio==2.33.0
-lpips==0.1.4
 nudenet==3.4.2
 pandas==2.2.3
 requests==2.32.3
-torchvision>=0.19.0
 webdataset>=0.2.86
 
 # Some historical scripts also depend on external packages or repos that are not

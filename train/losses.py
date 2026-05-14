@@ -27,7 +27,6 @@ class LossBreakdown:
     recon: torch.Tensor
     auxk: torch.Tensor
     align: torch.Tensor
-    decoder_decorr: torch.Tensor
     latent_decorr: torch.Tensor
 
 
@@ -90,27 +89,6 @@ def align_loss_from_group_latents(
         # PLAN 里定义的是 ||q_b - q_mid||_2^2，而不是按特征维做均值。
         loss = loss + torch.sum((q - q_mid) ** 2)
     return loss
-
-
-def decoder_decorrelation_loss(decoder_weight: torch.Tensor) -> torch.Tensor:
-    """计算 decoder 字典列向量的去相关损失。
-
-    输入：
-    - decoder_weight: Tensor[d_model, n_dirs]，decoder 权重矩阵。
-
-    输出：
-    - Tensor[]：标量损失，仅惩罚 Gram 矩阵的非对角项。
-
-    设计意图：
-    - unit norm 只能稳定每个方向自己的尺度；
-    - 这里进一步压制不同 feature 方向之间的相关性，
-      减少“多个 feature 本质上表达同一件事”的情况。
-    """
-    dirs = decoder_weight / decoder_weight.norm(dim=0, keepdim=True).clamp_min(1e-12)
-    gram = dirs.t() @ dirs
-    eye = torch.eye(int(gram.shape[0]), device=gram.device, dtype=gram.dtype)
-    offdiag = gram - eye
-    return torch.mean(offdiag.pow(2))
 
 
 def latent_covariance_decorrelation_loss(
@@ -176,11 +154,9 @@ def compose_total_loss(
     recon: torch.Tensor,
     auxk: torch.Tensor,
     align: torch.Tensor,
-    decoder_decorr: torch.Tensor,
     latent_decorr: torch.Tensor,
     auxk_coef: float,
     align_weight: float,
-    decoder_decorr_weight: float,
     latent_decorr_weight: float,
 ) -> LossBreakdown:
     """组合总损失并返回拆解项。
@@ -189,10 +165,8 @@ def compose_total_loss(
     - recon: 重建损失。
     - auxk: AuxK 损失。
     - align: 对齐损失。
-    - decoder_decorr: decoder 去相关损失。
     - auxk_coef: AuxK 权重。
     - align_weight: 对齐权重。
-    - decoder_decorr_weight: decoder 去相关权重。
     - latent_decorr_weight: latent 协方差去相关权重。
 
     输出：
@@ -202,7 +176,6 @@ def compose_total_loss(
         recon
         + float(auxk_coef) * auxk
         + float(align_weight) * align
-        + float(decoder_decorr_weight) * decoder_decorr
         + float(latent_decorr_weight) * latent_decorr
     )
     return LossBreakdown(
@@ -210,7 +183,6 @@ def compose_total_loss(
         recon=recon,
         auxk=auxk,
         align=align,
-        decoder_decorr=decoder_decorr,
         latent_decorr=latent_decorr,
     )
 
@@ -223,7 +195,6 @@ def group_forward_losses(
     mid_block: str,
     auxk_coef: float,
     align_weight: float,
-    decoder_decorr_weight: float = 0.0,
     latent_decorr_weight: float = 0.0,
     latent_decorr_top_k: int = 256,
 ) -> LossBreakdown:
@@ -264,10 +235,8 @@ def group_forward_losses(
         recon=recon,
         auxk=aux,
         align=align,
-        decoder_decorr=recon.new_tensor(0.0),
         latent_decorr=latent_decorr,
         auxk_coef=auxk_coef,
         align_weight=align_weight,
-        decoder_decorr_weight=decoder_decorr_weight,
         latent_decorr_weight=latent_decorr_weight,
     )
