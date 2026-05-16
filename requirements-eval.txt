@@ -14,3 +14,4 @@
 lpips==0.1.4
 torchvision>=0.19.0
 dreamsim==0.2.1
+nudenet==3.4.2

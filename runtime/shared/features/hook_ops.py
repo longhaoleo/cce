@@ -1,4 +1,4 @@
-"""特征干预工具：Ablation / Projected Ablation Hook。"""
+"""特征干预工具：Ablation / Injection / Replace / Projected Ablation Hook。"""
 
 from __future__ import annotations
 
@@ -14,8 +14,11 @@ class InterventionSpec:
     block: str
     feature_ids: Tuple[int, ...] = ()
     feature_scales: Tuple[float, ...] = ()
-    mode: str = "ablation"  # ablation | projected_ablation
+    inject_feature_ids: Tuple[int, ...] = ()
+    inject_feature_scales: Tuple[float, ...] = ()
+    mode: str = "ablation"  # ablation | injection | replace | projected_ablation
     scale: float = 1.0
+    inject_scale: float = 1.0
     t_start: int = 600
     t_end: int = 200
     use_spatial_norm_weight: bool = False  # 按 token 范数生成空间归一化权重
@@ -25,6 +28,8 @@ class InterventionSpec:
     coeff_source: str = "from_x"  # from_x | from_csv
     coeff_by_step: Dict[int, torch.Tensor] = field(default_factory=dict)  # step_idx -> [k] 时间权重（按 feature_ids 对齐）
     time_weight_scale: float = 1.0
+    inject_coeff_by_step: Dict[int, torch.Tensor] = field(default_factory=dict)
+    inject_time_weight_scale: float = 1.0
     projection_ridge: float = 1e-4
     step_start: Optional[int] = None
     step_end: Optional[int] = None

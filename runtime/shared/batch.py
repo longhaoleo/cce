@@ -31,11 +31,13 @@ from .erase import (
     add_intervention_args,
     SharedInterventionConfig,
     _build_intervention_spec,
+    _resolve_injectconcept,
     _resolve_feature_bundle,
     _scale_coeff_by_step,
     _save_eval_pair,
     build_intervention_cfg_from_args,
     build_shared_feature_intervention_hook,
+    resolve_intervention_roots,
 )
 
 
@@ -53,6 +55,7 @@ def parse_args() -> argparse.Namespace:
     g_io.add_argument("--concepts", nargs="+", type=str, default=None, help="概念列表；不传则自动扫描 target_concept_dict/*.json")
     g_io.add_argument("--target_concept_dict_dir", type=str, default="./target_concept_dict")
     g_io.add_argument("--concept_root", type=str, default="concept_dict", help="Shared 概念统计根目录。")
+    g_io.add_argument("--sae_root", type=str, default="", help="统一 SAE 产物根目录；传入后自动映射 concept-dig / blacklist 等子目录。")
     g_io.add_argument("--from_case", type=int, default=0)
     g_io.add_argument("--till_case", type=int, default=1_000_000)
     g_io.add_argument("--max_prompts", type=int, default=0, help=">0 时只取前 N 条")
@@ -212,6 +215,9 @@ def main() -> None:
         log_prefix="batch-shared",
     )
     intervention_cfg = _build_intervention_cfg(args)
+    mode = str(intervention_cfg.mode).lower()
+    injectconcept = _resolve_injectconcept(args, mode=mode)
+    concept_root, concept_dict_freq_root = resolve_intervention_roots(args)
 
     manifest_path = os.path.join(out_root, "run_manifest.jsonl")
     print(f"[batch-shared] checkpoint={ckpt_dir}")
@@ -227,16 +233,27 @@ def main() -> None:
             ensure_dir(concept_dir)
 
             features_by_block: Dict[str, object] = {}
+            inject_features_by_block: Dict[str, object] = {}
             for block in blocks:
                 features_by_block[str(block)] = _resolve_feature_bundle(
                     block=str(block),
                     targetconcept=str(concept),
-                    concept_root=str(args.concept_root),
+                    concept_root=str(concept_root),
                     top_k=int(intervention_cfg.feature_top_k),
                     total_steps=int(steps),
                     use_time_weight=bool(intervention_cfg.time.use_weight),
-                    blacklist_root=str(args.concept_dict_freq_root),
+                    blacklist_root=str(concept_dict_freq_root),
                 )
+                if mode == "replace":
+                    inject_features_by_block[str(block)] = _resolve_feature_bundle(
+                        block=str(block),
+                        targetconcept=str(injectconcept),
+                        concept_root=str(concept_root),
+                        top_k=int(intervention_cfg.feature_top_k),
+                        total_steps=int(steps),
+                        use_time_weight=bool(intervention_cfg.time.use_weight),
+                        blacklist_root=str(concept_dict_freq_root),
+                    )
             coeffs_by_block = {
                 block: _scale_coeff_by_step(
                     feat.coeff_by_step,
@@ -244,11 +261,25 @@ def main() -> None:
                 )
                 for block, feat in features_by_block.items()
             }
+            inject_coeffs_by_block = {
+                block: _scale_coeff_by_step(
+                    feat.coeff_by_step,
+                    scale=float(intervention_cfg.time.weight_scale) if bool(intervention_cfg.time.use_weight) else 1.0,
+                )
+                for block, feat in inject_features_by_block.items()
+            }
             block_scale_map = _build_block_scale_map(
                 blocks=[str(block) for block in blocks],
                 base_scale=float(intervention_cfg.scale),
                 coeffs_by_block=coeffs_by_block,
             )
+            inject_block_scale_map = None
+            if mode == "replace":
+                inject_block_scale_map = _build_block_scale_map(
+                    blocks=[str(block) for block in blocks],
+                    base_scale=float(intervention_cfg.inject_scale),
+                    coeffs_by_block=inject_coeffs_by_block,
+                )
 
             for row in prompts:
                 done += 1
@@ -264,9 +295,11 @@ def main() -> None:
                     spec = _build_intervention_spec(
                         block=str(block),
                         features=features_by_block[str(block)],
+                        inject_features=inject_features_by_block.get(str(block)),
                         cfg=intervention_cfg,
                         total_steps=int(steps),
                         block_scale_map=block_scale_map,
+                        inject_block_scale_map=inject_block_scale_map,
                     )
                     hooks[str(block)] = build_shared_feature_intervention_hook(
                         pipe=pipe,
@@ -322,9 +355,12 @@ def main() -> None:
 
                     per_case_manifest = {
                         "ckpt_dir": str(bundle.ckpt_dir),
-                        "concept_root": str(args.concept_root),
+                        "sae_root": str(getattr(args, "sae_root", "") or ""),
+                        "concept_root": str(concept_root),
+                        "concept_dict_freq_root": str(concept_dict_freq_root),
                         "prompt": prompt,
                         "targetconcept": str(concept),
+                        "injectconcept": str(injectconcept),
                         "case_number": int(case_number),
                         "blocks": [str(block) for block in blocks],
                         "steps": int(steps),
@@ -335,7 +371,11 @@ def main() -> None:
                         "intervention": asdict(intervention_cfg),
                         "norm_scale_by_block": norm_scale_by_block,
                         "block_scale_map": block_scale_map,
+                        "inject_block_scale_map": {} if inject_block_scale_map is None else inject_block_scale_map,
                         "features_by_block": {block: feat.to_manifest() for block, feat in features_by_block.items()},
+                        "inject_features_by_block": {
+                            block: feat.to_manifest() for block, feat in inject_features_by_block.items()
+                        },
                         "eval_original_dir": str((Path(prompt_dir).expanduser().resolve() / "eval_original")),
                         "eval_erased_dir": str((Path(prompt_dir).expanduser().resolve() / "eval_erased")),
                     }
@@ -354,11 +394,15 @@ def main() -> None:
                     "prompt": prompt,
                     "output_dir": prompt_dir,
                     "error": err,
+                    "sae_root": str(getattr(args, "sae_root", "") or ""),
                     "blocks": list(blocks),
+                    "injectconcept": str(injectconcept),
                     "steps": int(steps),
                     "guidance_scale": float(guidance_scale),
                     "resolution": int(resolution),
+                    "int_mode": str(intervention_cfg.mode),
                     "int_scale": float(intervention_cfg.scale),
+                    "int_inject_scale": float(intervention_cfg.inject_scale),
                     "int_feature_top_k": int(intervention_cfg.feature_top_k),
                     "int_use_time_weight": bool(intervention_cfg.time.use_weight),
                 }

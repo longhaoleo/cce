@@ -173,6 +173,11 @@ def _save_hook_debug_csv(
             "active_feature_ids_final",
             "top_feature_ids_final",
             "top_feature_scores_final",
+            "inject_active_feature_ids_final",
+            "inject_top_feature_ids_final",
+            "inject_top_feature_scores_final",
+            "mean_abs_recon_inject",
+            "mean_abs_delta_x_inject",
         ]
         with open(out_csv, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=fields)

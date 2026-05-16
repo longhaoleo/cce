@@ -23,9 +23,13 @@
 - [tools/README.md](tools/README.md)
   - Shared prompt-conditioned 高频特征统计 / blacklist
 - [evaluation/README.md](evaluation/README.md)
-  - Shared batch 擦除结果的 pixel / diag / CLIP / LPIPS / DreamSim 量化评测
+  - Shared batch 擦除结果的 pixel / diag / CLIP / LPIPS / DreamSim / NSFW 量化评测
 - [research/archive_experiments/README.md](research/archive_experiments/README.md)
   - 旧实验脚本归档，只做参考不参与当前主线
+- [research/nsfw_selective_erasure_plan.md](research/nsfw_selective_erasure_plan.md)
+  - 下一阶段 `SharedSAE + NSFW selective erasure` 论文级研究路线图
+- [research/sae_branch_registry.md](research/sae_branch_registry.md)
+  - 不同 SAE 训练分支与下游产物的命名注册表
 
 ## 目录结构
 
@@ -35,15 +39,15 @@ cce/
 ├─ runtime/shared/        # Shared 主线运行时实现
 ├─ SDLens/                # Hooked pipeline 基础设施（当前保留）
 ├─ research/archive_experiments/  # 旧实验脚本归档
-├─ feature_frequency/     # 已生成的基础统计 run 目录
+├─ feature_frequency/     # 按 SAE 分支分组的基础统计 run 目录
 ├─ train/                 # SharedSAE 训练
 ├─ tools/                 # Shared 辅助工具与脚本源码
 ├─ evaluation/            # Shared batch 擦除量化评测
 ├─ target_concept_dict/   # 概念定义输入
-├─ concept_dict/          # 概念定位输出
-├─ concept_dict_freq/     # 全局 blacklist 输出
+├─ concept_dict/          # 按 SAE 分支分组的概念定位输出
+├─ concept_dict_freq/     # 按 SAE 分支分组的全局 blacklist 输出
 ├─ batch_test_prompt/     # batch prompt 集合
-├─ image_output/          # 图片输出
+├─ image_output/          # 图片输出；正式实验按 SAE 分支分组
 └─ log/                   # 实验记录
 ```
 
@@ -182,9 +186,10 @@ python -m runtime.shared.batch \
 ## 输入输出约定
 
 - 概念定义：`target_concept_dict/<concept>.json`
-- 概念定位输出：`concept_dict/<block_short>/<concept>/`
-- 高频特征统计输出：`concept_dict_freq/<block_short>/`
-- 图片输出：`image_output/...`
+- 概念定位输出：`concept_dict/<sae_tag>/<block_short>/<concept>/`
+- 高频特征统计输出：`concept_dict_freq/<sae_tag>/<block_short>/`
+- 图片输出：`image_output/<sae_tag>/...`
+- 分支命名注册表：`research/sae_branch_registry.md`
 - 诊断 CSV：每个 case 目录内的 `diag_shared_intervention_*.csv`
 
 ## 依赖

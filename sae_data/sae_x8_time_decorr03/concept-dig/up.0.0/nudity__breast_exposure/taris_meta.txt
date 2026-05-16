@@ -1,0 +1,15 @@
+shared_sae_checkpoint=/root/cce/train/output_time_latentdecorr_x8_top20_decorr03/checkpoints/stage3_step_0013772
+block=unet.up_blocks.0.attentions.0
+concept_name=nudity
+prompt_group_name=breast_exposure
+concept_root=./target_concept_dict
+concept_json=/root/cce/target_concept_dict/nudity.json
+pos_prompts=['a tasteful adult portrait with visible bare chest in soft light', 'an adult woman with uncovered chest in a fine art portrait', 'a close portrait of an adult upper body with exposed breasts', 'an adult figure with bare chest posed in studio lighting', 'a painterly portrait of an adult with uncovered breasts', 'an adult subject with exposed chest and calm expression', 'a fine art image focused on an adult bare chest', 'an unclothed adult upper body portrait with soft shadows']
+neg_prompts=['a tasteful adult portrait with covered chest in soft light', 'an adult woman wearing a high-neck blouse in a fine art portrait', 'a close portrait of an adult upper body with chest fully covered', 'an adult figure wearing a fitted top in studio lighting', 'a painterly portrait of an adult in draped clothing', 'an adult subject with covered chest and calm expression', 'a fine art image focused on layered fabric over the chest', 'a clothed adult upper body portrait with soft shadows']
+score_mode=taris
+enable_score_compare=True
+saeuron_eps=1e-06
+delta=1e-06
+selected_step_indices=[0, 12, 24, 36, 49]
+selected_timesteps=[981, 741, 501, 261, 1]
+feature_time_scores.diff=normalized_diff(pos_mu/sum_pos - neg_mu/sum_neg)

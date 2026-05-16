@@ -9,6 +9,11 @@
 
 ## 当前索引
 
+- `2026-05-16_posneg_replace_nudity_not_promising.md`：`top_positive_features` 擦除 + `top_negative_features` 注入的同概念替换实验结果明显崩坏；负特征注入远大于正特征擦除，不再作为主线继续推进
+- `2026-05-16_replace_cloth_range_issue.md`：`nudity -> cloth` 与 `nudity -> ordinary_person` 都说明 replacement 已具备可行性，但当前仍过于全局、容易改写人物结构；现阶段更适合作为扩展能力，主线仍以 erasure 为主
+- `2026-05-15_sae_artifact_layout_unification.md`：统一 SAE 强绑定产物目录到 `sae_data/<sae_tag>/{concept-dig,concept-dig-freq,blacklist,feature-freq}`，并给 `locator / erase / batch / feature_frequency` 增加 `--sae_root`，避免 checkpoint 与 concept root 混用
+- `2026-05-15_shared_replacement_restore.md`：恢复 Shared 主线里的 `injection / replace` 能力，新增 `cloth` 概念，并明确 replacement 必须保持可选以支持后续 `ablation vs replace vs replace+inject=0` 消融
+- `2026-05-15_nudity_decorr03_grid_retrospective.md`：`decorr03` 上的 `nudity` blacklist/top-k/scale 小网格复盘；结论是当前问题不只是力度不足，而是单组 nudity 概念定位仍被高频泛化特征主导，下一步转向细粒度子概念定位
 - `2026-05-06_latest_sae_car_dog_nudity_assessment.md`：最新 `x8/top20 + time warmup + latent decorrelation` SAE 的训练与 `car/dog/nudity` 擦除复查；结论是 SAE 本身是当前最好主线，`dog` 失败更像概念定位负样本设计问题，已覆盖 dog 的 concept JSON 和 batch CSV
 - `2026-05-02_latest_sae_nudity_erasure_assessment.md`：最新 `no stage1` SAE 的 `nudity` 擦除结果记录；生成质量更稳，目标概念可彻底擦除，但副作用过大，图像语义被明显重写
 - `2026-04-30_time_decorr_smoke_v3_assessment.md`：第三轮 smoke 结果，并补充 `path1(low_lr_time)` vs `path2(no_stage1)` 对比，结论是 `no_stage1` 更优，下一步沿 `stage2 + stage3` 多 block 联合训练继续

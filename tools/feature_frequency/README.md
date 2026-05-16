@@ -45,16 +45,17 @@ python tools/feature_frequency/run_collect_shared_stats.py \
 输出目录示例：
 
 ```text
-feature_frequency/coco30k_stats_v1/
+sae_data/<sae_tag>/feature-freq/coco30k_stats_v1/
 ```
 
 ### 第二遍：按筛选规则生成 blacklist
 
 这一步不再重跑轨迹，只读取第一遍的统计结果，然后按你当前想试的条件生成：
 
-- `concept_dict_freq/<block>/feature_blacklist.txt`
-- `concept_dict_freq/<block>/all_feature_frequency_ranked.csv`
-- `concept_dict_freq/<block>/top_feature_frequency.csv`
+- `sae_data/<sae_tag>/blacklist/<block>/feature_blacklist.txt`
+- `sae_data/<sae_tag>/concept-dig-freq/<block>/all_feature_frequency_ranked.csv`
+- `sae_data/<sae_tag>/concept-dig-freq/<block>/top_feature_frequency.csv`
+- `sae_data/<sae_tag>/blacklist/<block>/feature_blacklist.txt`
 
 推荐命令：
 
@@ -62,12 +63,13 @@ feature_frequency/coco30k_stats_v1/
 cd /root/cce
 
 python tools/feature_frequency/run_build_blacklist.py \
-  --stats_dir feature_frequency/coco30k_stats_v1 \
+  --stats_dir sae_data/<sae_tag>/feature-freq/coco30k_stats_v1 \
+  --sae_root sae_data/<sae_tag> \
   --feature_top_k 200 \
-  --blacklist_freq_threshold 0.99 \
-  --blacklist_active_ratio_min 0.3 \
+  --blacklist_freq_threshold 0.0 \
+  --blacklist_active_ratio_min 0.95 \
   --blacklist_mean_min 0.0 \
-  --blacklist_max_features 50
+  --blacklist_max_features 0
 ```
 
 ## 为什么这样拆

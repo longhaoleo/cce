@@ -7,14 +7,13 @@
 - `tools/feature_frequency/`
   - 统计脚本源码
 - `feature_frequency/`
-  - 统计脚本已经跑出来的基础统计结果
+  - 旧平铺结果目录；新推荐迁到 `sae_data/<sae_tag>/feature-freq`
 
 ## 文件
 
 - `feature_frequency/`
-  - 高频特征统计专用目录
-  - 第一遍收集基础统计
-  - 第二遍按规则生成 blacklist
+  - 旧版高频特征统计目录
+  - 新版统一为 `sae_data/<sae_tag>/feature-freq`
 
 ## 推荐命令
 
@@ -26,6 +25,7 @@ cd /root/cce
 python tools/feature_frequency/run_collect_shared_stats.py \
   --ckpt_dir train/output_exp_c_adapter_align/checkpoints/stage3_step_0027400 \
   --local_files_only \
+  --sae_root sae_data/<sae_tag> \
   --prompts_path data/coco_30k.csv \
   --blocks \
     unet.down_blocks.2.attentions.1 \
@@ -48,7 +48,8 @@ python tools/feature_frequency/run_collect_shared_stats.py \
 cd /root/cce
 
 python tools/feature_frequency/run_build_blacklist.py \
-  --stats_dir feature_frequency/coco30k_stats_v1 \
+  --stats_dir sae_data/<sae_tag>/feature-freq/coco30k_stats_v1 \
+  --sae_root sae_data/<sae_tag> \
   --feature_top_k 200 \
   --blacklist_freq_threshold 0.99 \
   --blacklist_active_ratio_min 0.3 \
@@ -57,12 +58,12 @@ python tools/feature_frequency/run_build_blacklist.py \
 
 ## 输出
 
-- `feature_frequency/<run_name>/<block_short>/dataset_feature_stats.pt`
-- `feature_frequency/<run_name>/<block_short>/all_feature_frequency_ranked.csv`
-- `feature_frequency/<run_name>/<block_short>/top_feature_frequency.csv`
-- `concept_dict_freq/<block_short>/all_feature_frequency_ranked.csv`
-- `concept_dict_freq/<block_short>/top_feature_frequency.csv`
-- `concept_dict_freq/<block_short>/feature_blacklist.txt`
+- `sae_data/<sae_tag>/feature-freq/<run_name>/<block_short>/dataset_feature_stats.pt`
+- `sae_data/<sae_tag>/feature-freq/<run_name>/<block_short>/all_feature_frequency_ranked.csv`
+- `sae_data/<sae_tag>/feature-freq/<run_name>/<block_short>/top_feature_frequency.csv`
+- `sae_data/<sae_tag>/concept-dig-freq/<block_short>/all_feature_frequency_ranked.csv`
+- `sae_data/<sae_tag>/concept-dig-freq/<block_short>/top_feature_frequency.csv`
+- `sae_data/<sae_tag>/blacklist/<block_short>/feature_blacklist.txt`
 
 ## 输入约定
 

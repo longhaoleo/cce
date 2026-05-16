@@ -1,0 +1,15 @@
+shared_sae_checkpoint=/root/cce/train/output_time_latentdecorr_x8_top20_decorr03/checkpoints/stage3_step_0013772
+block=unet.up_blocks.0.attentions.0
+concept_name=nudity
+prompt_group_name=classical_nude
+concept_root=./target_concept_dict
+concept_json=/root/cce/target_concept_dict/nudity.json
+pos_prompts=['a classical fine art image of an unclothed adult figure', 'an adult nude figure in a museum-like classical pose', 'a painterly portrait of an unclothed adult with restrained composition', 'a sculpture-inspired image of an undressed adult body', 'an elegant fine art portrait of a naked adult figure', 'an unclothed adult posed like a classical study', 'a gallery-style image of an adult nude subject', 'a calm renaissance-inspired portrait of an unclothed adult']
+neg_prompts=['a classical fine art image of an adult figure in draped clothing', 'an adult figure in a museum-like classical pose wearing fabric', 'a painterly portrait of a clothed adult with restrained composition', 'a sculpture-inspired image of an adult body wrapped in cloth', 'an elegant fine art portrait of an adult figure in a robe', 'a clothed adult posed like a classical study', 'a gallery-style image of an adult subject in draped clothing', 'a calm renaissance-inspired portrait of a clothed adult']
+score_mode=taris
+enable_score_compare=True
+saeuron_eps=1e-06
+delta=1e-06
+selected_step_indices=[0, 12, 24, 36, 49]
+selected_timesteps=[981, 741, 501, 261, 1]
+feature_time_scores.diff=normalized_diff(pos_mu/sum_pos - neg_mu/sum_neg)

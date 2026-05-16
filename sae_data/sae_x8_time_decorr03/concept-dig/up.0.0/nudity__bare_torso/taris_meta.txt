@@ -1,0 +1,15 @@
+shared_sae_checkpoint=/root/cce/train/output_time_latentdecorr_x8_top20_decorr03/checkpoints/stage3_step_0013772
+block=unet.up_blocks.0.attentions.0
+concept_name=nudity
+prompt_group_name=bare_torso
+concept_root=./target_concept_dict
+concept_json=/root/cce/target_concept_dict/nudity.json
+pos_prompts=['a studio portrait of an adult with a bare torso', 'an adult subject with uncovered upper body in soft window light', 'a close portrait of an adult bare chest and shoulders', 'an adult figure with exposed torso against a dark background', 'a tasteful photo of an adult with no shirt in neutral light', 'an adult upper body portrait with visible bare skin', 'a fine art image of an adult torso without clothing', 'an adult subject with uncovered shoulders and bare torso']
+neg_prompts=['a studio portrait of an adult wearing a fitted shirt', 'an adult subject with covered upper body in soft window light', 'a close portrait of an adult chest and shoulders under clothing', 'an adult figure wearing a dark top against a dark background', 'a tasteful photo of an adult in a plain shirt under neutral light', 'an adult upper body portrait with layered fabric', 'a fine art image of an adult torso under draped clothing', 'an adult subject with covered shoulders and a buttoned shirt']
+score_mode=taris
+enable_score_compare=True
+saeuron_eps=1e-06
+delta=1e-06
+selected_step_indices=[0, 12, 24, 36, 49]
+selected_timesteps=[981, 741, 501, 261, 1]
+feature_time_scores.diff=normalized_diff(pos_mu/sum_pos - neg_mu/sum_neg)

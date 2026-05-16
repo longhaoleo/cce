@@ -10,6 +10,7 @@ cd /root/cce
 python -m runtime.shared.locator \
   --ckpt_dir train/output_exp_c_adapter_align/checkpoints/stage3_step_0027400 \
   --local_files_only \
+  --sae_root sae_data/exp_c_adapter_align \
   --only dog \
   --taris_top_k 10 \
   --taris_score_mode taris
@@ -23,6 +24,7 @@ cd /root/cce
 python -m runtime.shared.locator \
   --ckpt_dir train/output_exp_c_adapter_align/checkpoints/stage3_step_0027400 \
   --local_files_only \
+  --sae_root sae_data/exp_c_adapter_align \
   --only nudity \
   --taris_top_k 10 \
   --taris_score_mode taris
@@ -38,6 +40,7 @@ cd /root/cce
 python -m runtime.shared.erase \
   --ckpt_dir train/output_exp_c_adapter_align/checkpoints/stage3_step_0027400 \
   --local_files_only \
+  --sae_root sae_data/exp_c_adapter_align \
   --targetconcept dog \
   --prompt "a dog on the grass, realistic, natural lighting" \
   --output_dir image_output/shared_concept_erase_dog
@@ -51,9 +54,58 @@ cd /root/cce
 python -m runtime.shared.erase \
   --ckpt_dir train/output_exp_c_adapter_align/checkpoints/stage3_step_0027400 \
   --local_files_only \
+  --sae_root sae_data/exp_c_adapter_align \
   --targetconcept car \
   --prompt "a photo of a car on a city street, realistic, natural lighting" \
   --output_dir image_output/shared_concept_erase_car
+```
+
+## Safe Replacement
+
+### `cloth`
+
+先定位替换概念：
+
+```bash
+cd /root/cce
+
+python -m runtime.shared.locator \
+  --ckpt_dir train/output_exp_c_adapter_align/checkpoints/stage3_step_0027400 \
+  --local_files_only \
+  --sae_root sae_data/exp_c_adapter_align \
+  --only cloth \
+  --taris_top_k 10 \
+  --taris_score_mode taris
+```
+
+### `nudity -> cloth`
+
+```bash
+cd /root/cce
+
+python -m runtime.shared.erase \
+  --ckpt_dir train/output_exp_c_adapter_align/checkpoints/stage3_step_0027400 \
+  --local_files_only \
+  --sae_root sae_data/exp_c_adapter_align \
+  --targetconcept nudity \
+  --injectconcept cloth \
+  --int_mode replace \
+  --prompt "an unclothed adult portrait in soft natural light" \
+  --output_dir image_output/shared_concept_replace_nudity_cloth
+```
+
+```bash
+cd /root/cce
+
+python -m runtime.shared.batch \
+  --ckpt_dir train/output_exp_c_adapter_align/checkpoints/stage3_step_0027400 \
+  --local_files_only \
+  --sae_root sae_data/exp_c_adapter_align \
+  --prompts_path batch_test_prompt/nudity.csv \
+  --concepts nudity \
+  --injectconcept cloth \
+  --int_mode replace \
+  --output_dir image_output/batch_shared_concept_replace_nudity_cloth
 ```
 
 ## Batch Erasure
@@ -66,6 +118,7 @@ cd /root/cce
 python -m runtime.shared.batch \
   --ckpt_dir train/output_exp_c_adapter_align/checkpoints/stage3_step_0027400 \
   --local_files_only \
+  --sae_root sae_data/exp_c_adapter_align \
   --prompts_path batch_test_prompt/car.csv \
   --concepts car \
   --output_dir image_output/batch_shared_concept_erase_car
@@ -79,6 +132,7 @@ cd /root/cce
 python -m runtime.shared.batch \
   --ckpt_dir train/output_exp_c_adapter_align/checkpoints/stage3_step_0027400 \
   --local_files_only \
+  --sae_root sae_data/exp_c_adapter_align \
   --prompts_path batch_test_prompt/dog.csv \
   --concepts dog \
   --output_dir image_output/batch_shared_concept_erase_dog
@@ -92,6 +146,7 @@ cd /root/cce
 python -m runtime.shared.batch \
   --ckpt_dir train/output_exp_c_adapter_align/checkpoints/stage3_step_0027400 \
   --local_files_only \
+  --sae_root sae_data/exp_c_adapter_align \
   --prompts_path batch_test_prompt/nudity.csv \
   --concepts nudity \
   --output_dir image_output/batch_shared_concept_erase_nudity
@@ -114,6 +169,7 @@ cd /root/cce
 python -m runtime.shared.locator \
   --ckpt_dir train/output_time_decorr_stage23_half_no_stage1/checkpoints/stage3_step_0013772 \
   --local_files_only \
+  --sae_root sae_data/stage23_half_no_stage1 \
   --only car \
   --taris_top_k 10 \
   --taris_score_mode taris
@@ -125,6 +181,7 @@ cd /root/cce
 python -m runtime.shared.batch \
   --ckpt_dir train/output_time_decorr_stage23_half_no_stage1/checkpoints/stage3_step_0013772 \
   --local_files_only \
+  --sae_root sae_data/stage23_half_no_stage1 \
   --prompts_path batch_test_prompt/nudity.csv \
   --concepts nudity \
   --output_dir image_output/batch_shared_concept_erase_nudity_stage23_half

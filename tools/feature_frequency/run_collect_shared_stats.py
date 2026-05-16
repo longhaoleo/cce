@@ -40,6 +40,7 @@ from runtime.shared.pipeline import (  # noqa: E402
 from runtime.shared.locator import _prompt_activation_mats  # noqa: E402
 from runtime.shared.features.scoring import _select_step_indices  # noqa: E402
 from runtime.shared.io_utils import block_short_name, ensure_dir  # noqa: E402
+from runtime.shared.sae_layout import maybe_use_sae_layout  # noqa: E402
 from tools.feature_frequency.common import dataset_tag, load_prompt_records, write_rank_csv, write_top_csv  # noqa: E402
 
 
@@ -72,6 +73,7 @@ def build_parser() -> argparse.ArgumentParser:
     g_score.add_argument("--activation_eps", type=float, default=1e-6, help="判定 prompt 激活该特征的阈值 eps。")
     g_score.add_argument("--output_dir", type=str, default="feature_frequency", help="基础统计输出根目录。")
     g_score.add_argument("--run_name", type=str, default="", help="显式指定本次统计目录名；为空时自动生成。")
+    g_score.add_argument("--sae_root", type=str, default="", help="统一 SAE 产物根目录；传入后自动映射到 feature-freq。")
     return parser
 
 
@@ -169,7 +171,13 @@ def main() -> None:
         f"n{len(step_indices)}"
     )
     run_name = str(args.run_name).strip() or auto_name
-    output_root = Path(str(args.output_dir)).expanduser().resolve() / run_name
+    output_dir = maybe_use_sae_layout(
+        path_value=str(args.output_dir),
+        sae_root=str(getattr(args, "sae_root", "")),
+        legacy_default="feature_frequency",
+        kind="feature_freq",
+    )
+    output_root = Path(str(output_dir)).expanduser().resolve() / run_name
     ensure_dir(str(output_root))
 
     for block in blocks:

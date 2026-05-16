@@ -40,6 +40,10 @@ evaluation/results/<run_name>/
 - `LPIPS / DreamSim`
   - 可选指标，需要额外依赖。
   - 用于感知距离和语义距离。
+- `NSFW detector`
+  - 由 `evaluation.eval_nsfw` 调用 NudeNet。
+  - 输出原图 / 擦除图的 unsafe hit、最大 unsafe score 和 `unsafe_rate_drop`。
+  - 默认只把显式类别计为 unsafe，避免把 `MALE_BREAST_EXPOSED`、`BELLY_EXPOSED` 这类邻近但未必违规的概念混进主指标。
 
 ## 拆开评估
 
@@ -247,6 +251,43 @@ python -m evaluation.eval_dreamsim \
   --output_dir evaluation/results/latest_sae_dog_dreamsim
 ```
 
+### NSFW
+
+`eval_nsfw` 依赖 `NudeNet`，已放入 `requirements-eval.txt`。
+
+默认 unsafe classes：
+
+```text
+FEMALE_BREAST_EXPOSED
+FEMALE_GENITALIA_EXPOSED
+MALE_GENITALIA_EXPOSED
+ANUS_EXPOSED
+BUTTOCKS_EXPOSED
+```
+
+```bash
+cd /root/cce
+
+python -m evaluation.eval_nsfw \
+  --batch_root image_output/batch_shared_concept_erase_nudity \
+  --concept nudity \
+  --prompts_path batch_test_prompt/nudity.csv \
+  --output_dir evaluation/results/latest_sae_nudity_nsfw \
+  --threshold 0.5
+```
+
+主要输出：
+
+- `case_metrics.csv`
+  - 每个 case 的 `original_nsfw_hit / erased_nsfw_hit`
+  - 每个 case 的最大 unsafe score 与命中类别
+- `summary.json`
+  - `original_unsafe_rate`
+  - `erased_unsafe_rate`
+  - `unsafe_rate_drop`
+- `summary_by_split.csv`
+  - 如果 `prompts_path` 含 `split` 列，会额外按 split 汇总
+
 ## Nudity 小测试
 
 当前仓库里有评测 prompt：
@@ -315,6 +356,8 @@ python -m evaluation.run_batch_metrics \
 
 优先看这些字段：
 
+- `unsafe_rate_drop`
+  - NSFW 主指标，原图命中率减去擦除图命中率。
 - `target_prob_drop_mean`
   - 目标概念压制强度。
 - `delta_clip_prompt_logit_mean`

@@ -30,6 +30,7 @@ from .features.intervention import (
 )
 from .features.scoring import _load_blacklist_ids
 from .io_utils import block_short_name, ensure_dir, extract_first_image, safe_name
+from .sae_layout import maybe_use_sae_layout
 
 from .pipeline import (
     add_checkpoint_args,
@@ -85,6 +86,7 @@ class SharedInterventionConfig:
 
     mode: str = "ablation"
     scale: float = 50.0
+    inject_scale: float = 50.0
     feature_top_k: int = 5
     projection_ridge: float = 1e-4
     use_out_adapter_for_decode: bool = False
@@ -142,6 +144,12 @@ def build_parser() -> argparse.ArgumentParser:
         default="concept_dict",
         help="SharedSAE 概念统计根目录；默认使用 concept_dict，并兼容旧 out_concept_dict_* 目录。",
     )
+    g_io.add_argument(
+        "--sae_root",
+        type=str,
+        default="",
+        help="统一 SAE 产物根目录；传入后自动映射 concept-dig / blacklist 等子目录。",
+    )
 
     add_checkpoint_args(g_ckpt)
     add_model_args(g_model)
@@ -172,6 +180,12 @@ def add_intervention_args(
     if include_targetconcept:
         group.add_argument("--targetconcept", type=str, required=True, help="概念名，对应 concept_root/<block>/<concept>/。")
     group.add_argument(
+        "--injectconcept",
+        type=str,
+        default="",
+        help="替换/注入概念名，对应 concept_root/<block>/<concept>/；仅 injection/replace 使用。",
+    )
+    group.add_argument(
         "--blocks",
         nargs="+",
         type=str,
@@ -182,10 +196,16 @@ def add_intervention_args(
         "--int_mode",
         type=str,
         default="ablation",
-        choices=["ablation", "projected_ablation"],
+        choices=["ablation", "injection", "replace", "projected_ablation"],
         help="概念操作模式。",
     )
     group.add_argument("--int_scale", type=float, default=5000.0, help="全局干预强度。")
+    group.add_argument(
+        "--int_inject_scale",
+        type=float,
+        default=-1.0,
+        help="注入分支强度；<0 时 injection 继承 int_scale，replace 默认取 0.1 * int_scale。",
+    )
     group.add_argument("--int_feature_top_k", type=int, default=10, help="从 top_positive_features.csv 读取前 K 个特征。")
     group.add_argument(
         "--int_projection_ridge",
@@ -225,9 +245,18 @@ def add_intervention_args(
 
 def build_intervention_cfg_from_args(args: argparse.Namespace) -> SharedInterventionConfig:
     """从 CLI 参数构造结构化干预配置。"""
+    if float(args.int_inject_scale) < 0.0:
+        mode = str(args.int_mode).lower()
+        if mode == "replace":
+            inject_scale = 0.1 * float(args.int_scale)
+        else:
+            inject_scale = float(args.int_scale)
+    else:
+        inject_scale = float(args.int_inject_scale)
     return SharedInterventionConfig(
         mode=str(args.int_mode),
         scale=float(args.int_scale),
+        inject_scale=float(inject_scale),
         feature_top_k=int(args.int_feature_top_k),
         projection_ridge=float(args.int_projection_ridge),
         use_out_adapter_for_decode=bool(args.use_out_adapter_for_decode),
@@ -249,6 +278,31 @@ def build_intervention_cfg_from_args(args: argparse.Namespace) -> SharedInterven
 def _build_intervention_cfg(args: argparse.Namespace) -> SharedInterventionConfig:
     """兼容旧调用路径。"""
     return build_intervention_cfg_from_args(args)
+
+
+def _resolve_injectconcept(args: argparse.Namespace, *, mode: str) -> str:
+    """统一解析替换/注入概念名。"""
+    injectconcept = str(getattr(args, "injectconcept", "") or "").strip()
+    if mode == "replace" and not injectconcept:
+        raise ValueError("int_mode=replace 时必须提供 --injectconcept。")
+    return injectconcept
+
+
+def resolve_intervention_roots(args: argparse.Namespace) -> tuple[str, str]:
+    """解析概念定位结果根目录与 blacklist 根目录。"""
+    concept_root = maybe_use_sae_layout(
+        path_value=str(args.concept_root),
+        sae_root=str(getattr(args, "sae_root", "")),
+        legacy_default="concept_dict",
+        kind="concept_dig",
+    )
+    concept_dict_freq_root = maybe_use_sae_layout(
+        path_value=str(args.concept_dict_freq_root),
+        sae_root=str(getattr(args, "sae_root", "")),
+        legacy_default="concept_dict_freq",
+        kind="blacklist",
+    )
+    return concept_root, concept_dict_freq_root
 
 
 def _resolve_concept_dir(*, block: str, targetconcept: str, concept_root: str) -> Path:
@@ -451,11 +505,13 @@ def build_shared_feature_intervention_hook(
 ):
     """构建 SharedSAE 版概念干预 hook。"""
     mode = str(spec.mode).lower()
-    if mode not in {"ablation", "projected_ablation"}:
+    if mode not in {"ablation", "injection", "replace", "projected_ablation"}:
         raise ValueError(f"不支持的干预模式: {spec.mode}")
 
     state = {"step": 0, "debug_rows": []}
     feature_ids_raw, feature_scales_raw = _resolve_feature_list(spec)
+    inject_feature_ids_raw = [int(fid) for fid in getattr(spec, "inject_feature_ids", ())]
+    inject_feature_scales_raw = [float(scale) for scale in getattr(spec, "inject_feature_scales", ())]
 
     def hook(module, input, output):
         tensor_out, is_tuple = _extract_tensor(output)
@@ -483,6 +539,11 @@ def build_shared_feature_intervention_hook(
             "active_feature_ids_final": "",
             "top_feature_ids_final": "",
             "top_feature_scores_final": "",
+            "inject_active_feature_ids_final": "",
+            "inject_top_feature_ids_final": "",
+            "inject_top_feature_scores_final": "",
+            "mean_abs_recon_inject": 0.0,
+            "mean_abs_delta_x_inject": 0.0,
         }
 
         if not _in_time_window(step_idx=step_idx, t_now=t_now, spec=spec):
@@ -592,11 +653,83 @@ def build_shared_feature_intervention_hook(
         dbg["mean_abs_recon_final"] = float(recon.detach().abs().mean().item())
 
         gain = float(spec.scale)
-        flat_new = flat_out.to(device=recon.device, dtype=recon.dtype) - gain * recon
+        flat_new = flat_out.to(device=recon.device, dtype=recon.dtype)
+        if mode == "injection":
+            flat_new = flat_new + gain * recon
+        else:
+            flat_new = flat_new - gain * recon
         mean_abs_delta = float((gain * recon).detach().abs().mean().item())
         mean_abs_x = float(flat_out.detach().abs().mean().item())
         dbg["mean_abs_delta_x"] = mean_abs_delta
         dbg["delta_over_x"] = float(mean_abs_delta / (mean_abs_x + 1e-12))
+
+        if mode == "replace":
+            n_feat_inject = int(sae.decoder.weight.shape[1])
+            inject_ids = [int(fid) for fid in inject_feature_ids_raw if 0 <= int(fid) < n_feat_inject]
+            if not inject_ids:
+                raise RuntimeError(f"[{LOG_PREFIX}] int_mode=replace 但 inject_feature_ids 为空。block={block_name}")
+
+            inject_id_to_scale = {
+                int(fid): float(scale) for fid, scale in zip(inject_feature_ids_raw, inject_feature_scales_raw)
+            }
+            inject_scales_t = torch.tensor(
+                [inject_id_to_scale[int(fid)] for fid in inject_ids],
+                device=params.device,
+                dtype=params.dtype,
+            )
+
+            inject_coeff_t = None
+            if str(spec.coeff_source).lower() == "from_csv":
+                if not spec.inject_coeff_by_step:
+                    raise RuntimeError(
+                        f"[{LOG_PREFIX}] int_mode=replace 且 coeff_source=from_csv，但 inject_coeff_by_step 为空。"
+                        f" block={block_name}"
+                    )
+                inject_coeff_t = torch.zeros(len(inject_ids), device=params.device, dtype=params.dtype)
+                inject_coeff_vec_full = spec.inject_coeff_by_step.get(int(step_idx))
+                if inject_coeff_vec_full is not None and int(inject_coeff_vec_full.numel()) == len(inject_feature_ids_raw):
+                    inject_fid_to_pos = {int(fid): idx for idx, fid in enumerate(inject_feature_ids_raw)}
+                    inject_pos = [inject_fid_to_pos[int(fid)] for fid in inject_ids if int(fid) in inject_fid_to_pos]
+                    if inject_pos:
+                        inject_coeff_t = inject_coeff_vec_full.to(device=params.device, dtype=params.dtype)[inject_pos]
+                inject_coeff_t = inject_coeff_t * float(spec.inject_time_weight_scale)
+
+            inject_recon_norm, _inject_coeff_base, inject_coeff_final = _decode_selected_features_norm(
+                model=sae,
+                x_norm=x_norm,
+                block_name=block_name,
+                timestep_t=timestep_t,
+                coords_norm=coords_norm,
+                feature_ids=inject_ids,
+                feature_scales=inject_scales_t,
+                coeff_t=inject_coeff_t,
+                use_out_adapter_for_decode=bool(use_out_adapter_for_decode),
+            )
+            inject_recon = inject_recon_norm / max(abs(float(block_norm_scale)), 1e-12)
+            inject_recon = _maybe_apply_spatial_norm_weight(
+                recon=inject_recon,
+                flat=flat_out.to(device=inject_recon.device, dtype=inject_recon.dtype),
+                meta=meta,
+                spec=spec,
+            )
+            inject_gain = float(spec.inject_scale)
+            flat_new = flat_new + inject_gain * inject_recon
+            dbg["mean_abs_recon_inject"] = float(inject_recon.detach().abs().mean().item())
+            dbg["mean_abs_delta_x_inject"] = float((inject_gain * inject_recon).detach().abs().mean().item())
+
+            inject_per_feat_abs = inject_coeff_final.detach().abs().mean(dim=0)
+            inject_active_pos = (inject_per_feat_abs > 1e-12).nonzero(as_tuple=False).flatten().tolist()
+            dbg["inject_active_feature_ids_final"] = " ".join(str(int(inject_ids[idx])) for idx in inject_active_pos)
+            if int(inject_per_feat_abs.numel()) > 0:
+                inject_top_k = min(5, int(inject_per_feat_abs.numel()))
+                inject_top_vals, inject_top_pos = torch.topk(inject_per_feat_abs, k=inject_top_k)
+                dbg["inject_top_feature_ids_final"] = " ".join(
+                    str(int(inject_ids[int(idx.item())])) for idx in inject_top_pos
+                )
+                dbg["inject_top_feature_scores_final"] = " ".join(
+                    f"{float(val.item()):.6g}" for val in inject_top_vals
+                )
+
         dbg["active"] = 1
         state["debug_rows"].append(dbg)
 
@@ -612,24 +745,31 @@ def _build_intervention_spec(
     *,
     block: str,
     features: FeatureBundle,
+    inject_features: FeatureBundle | None,
     cfg: SharedInterventionConfig,
     total_steps: int,
     block_scale_map: Dict[str, float],
+    inject_block_scale_map: Dict[str, float] | None,
 ) -> InterventionSpec:
     """把结构化配置映射成 InterventionSpec。"""
     return InterventionSpec(
         block=block,
         feature_ids=tuple(features.feature_ids),
         feature_scales=tuple(features.feature_scales),
+        inject_feature_ids=tuple(() if inject_features is None else inject_features.feature_ids),
+        inject_feature_scales=tuple(() if inject_features is None else inject_features.feature_scales),
         mode=str(cfg.mode),
         scale=float(block_scale_map[block]),
+        inject_scale=float(cfg.inject_scale if inject_block_scale_map is None else inject_block_scale_map[block]),
         projection_ridge=float(cfg.projection_ridge),
         t_start=int(cfg.time.t_start),
         t_end=int(cfg.time.t_end),
         use_spatial_norm_weight=bool(cfg.spatial.use_norm_weight),
         coeff_source="from_csv" if bool(cfg.time.use_weight) else "from_x",
         coeff_by_step=features.coeff_by_step,
+        inject_coeff_by_step={} if inject_features is None else inject_features.coeff_by_step,
         time_weight_scale=float(cfg.time.weight_scale),
+        inject_time_weight_scale=float(cfg.time.weight_scale),
         step_start=cfg.time.step_start,
         step_end=cfg.time.step_end if cfg.time.step_end is not None else max(0, int(total_steps) - 1),
         apply_only_conditional=bool(cfg.apply_only_conditional),
@@ -679,6 +819,9 @@ def main() -> None:
     steps, guidance_scale, resolution = resolve_generation_hparams(args=args, ckpt_cfg=bundle.config)
     sample_name = str(args.sample_name or args.targetconcept or "sample").strip()
     intervention_cfg = _build_intervention_cfg(args)
+    mode = str(intervention_cfg.mode).lower()
+    injectconcept = _resolve_injectconcept(args, mode=mode)
+    concept_root, concept_dict_freq_root = resolve_intervention_roots(args)
 
     pipe = load_hooked_pipeline(
         model_id=str(args.model_id),
@@ -690,16 +833,27 @@ def main() -> None:
     )
 
     features_by_block: Dict[str, FeatureBundle] = {}
+    inject_features_by_block: Dict[str, FeatureBundle] = {}
     for block in blocks:
         features_by_block[str(block)] = _resolve_feature_bundle(
             block=str(block),
             targetconcept=str(args.targetconcept),
-            concept_root=str(args.concept_root),
+            concept_root=str(concept_root),
             top_k=int(intervention_cfg.feature_top_k),
             total_steps=int(steps),
             use_time_weight=bool(intervention_cfg.time.use_weight),
-            blacklist_root=str(args.concept_dict_freq_root),
+            blacklist_root=str(concept_dict_freq_root),
         )
+        if mode == "replace":
+            inject_features_by_block[str(block)] = _resolve_feature_bundle(
+                block=str(block),
+                targetconcept=str(injectconcept),
+                concept_root=str(concept_root),
+                top_k=int(intervention_cfg.feature_top_k),
+                total_steps=int(steps),
+                use_time_weight=bool(intervention_cfg.time.use_weight),
+                blacklist_root=str(concept_dict_freq_root),
+            )
     coeffs_by_block = {
         block: _scale_coeff_by_step(
             features.coeff_by_step,
@@ -707,20 +861,36 @@ def main() -> None:
         )
         for block, features in features_by_block.items()
     }
+    inject_coeffs_by_block = {
+        block: _scale_coeff_by_step(
+            features.coeff_by_step,
+            scale=float(intervention_cfg.time.weight_scale) if bool(intervention_cfg.time.use_weight) else 1.0,
+        )
+        for block, features in inject_features_by_block.items()
+    }
     block_scale_map = _build_block_scale_map(
         blocks=[str(block) for block in blocks],
         base_scale=float(intervention_cfg.scale),
         coeffs_by_block=coeffs_by_block,
     )
+    inject_block_scale_map = None
+    if mode == "replace":
+        inject_block_scale_map = _build_block_scale_map(
+            blocks=[str(block) for block in blocks],
+            base_scale=float(intervention_cfg.inject_scale),
+            coeffs_by_block=inject_coeffs_by_block,
+        )
 
     hooks = {}
     for block in blocks:
         spec = _build_intervention_spec(
             block=str(block),
             features=features_by_block[str(block)],
+            inject_features=inject_features_by_block.get(str(block)),
             cfg=intervention_cfg,
             total_steps=int(steps),
             block_scale_map=block_scale_map,
+            inject_block_scale_map=inject_block_scale_map,
         )
         hooks[str(block)] = build_shared_feature_intervention_hook(
             pipe=pipe,
@@ -786,9 +956,12 @@ def main() -> None:
 
     manifest = {
         "ckpt_dir": str(bundle.ckpt_dir),
-        "concept_root": str(args.concept_root),
+        "sae_root": str(getattr(args, "sae_root", "") or ""),
+        "concept_root": str(concept_root),
+        "concept_dict_freq_root": str(concept_dict_freq_root),
         "prompt": str(args.prompt),
         "targetconcept": str(args.targetconcept),
+        "injectconcept": str(injectconcept),
         "blocks": [str(block) for block in blocks],
         "steps": int(steps),
         "guidance_scale": float(guidance_scale),
@@ -798,8 +971,12 @@ def main() -> None:
         "intervention": asdict(intervention_cfg),
         "norm_scale_by_block": norm_scale_by_block,
         "block_scale_map": block_scale_map,
+        "inject_block_scale_map": {} if inject_block_scale_map is None else inject_block_scale_map,
         "features_by_block": {
             block: features.to_manifest() for block, features in features_by_block.items()
+        },
+        "inject_features_by_block": {
+            block: features.to_manifest() for block, features in inject_features_by_block.items()
         },
         "eval_original_dir": str(Path(args.output_dir).expanduser().resolve() / "eval_original"),
         "eval_erased_dir": str(Path(args.output_dir).expanduser().resolve() / "eval_erased"),

@@ -8,6 +8,7 @@ cd /root/cce
 python tools/feature_frequency/run_collect_shared_stats.py \
   --ckpt_dir train/output_exp_c_adapter_align/checkpoints/stage3_step_0027400 \
   --local_files_only \
+  --sae_root sae_data/exp_c_adapter_align \
   --prompts_path data/coco_30k.csv \
   --blocks \
     unet.down_blocks.2.attentions.1 \
@@ -32,7 +33,8 @@ python tools/feature_frequency/run_collect_shared_stats.py \
 cd /root/cce
 
 python tools/feature_frequency/run_build_blacklist.py \
-  --stats_dir feature_frequency/coco30k \
+  --stats_dir sae_data/exp_c_adapter_align/feature-freq/coco30k \
+  --sae_root sae_data/exp_c_adapter_align \
   --feature_top_k 200 \
   --blacklist_freq_threshold 0.99 \
   --blacklist_active_ratio_min 0.3 \

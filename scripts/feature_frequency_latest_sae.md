@@ -1,10 +1,15 @@
-# Feature Frequency For Latest SAE
+# Feature Frequency For `sae_x8_time`
 
-当前最新训练结果：
+当前对应训练分支：
 
-- `train/output_time_decorr_stage23_half_no_stage1/checkpoints/stage3_step_0013772`
+- `sae_x8_time`
+- `train/output_time_latentdecorr_x8_top20_half/checkpoints/stage3_step_0013772`
 
-这份文档只用于最新 `no stage1` checkpoint。不要和旧基线的 `coco30k_stats_v1` 混用。
+这份文档只用于 `sae_x8_time`。当前已有统计目录：
+
+```text
+sae_data/sae_x8_time/feature-freq/coco30k/
+```
 
 ## First Pass: Collect Stats
 
@@ -14,6 +19,7 @@ cd /root/cce
 python tools/feature_frequency/run_collect_shared_stats.py \
   --ckpt_dir train/output_time_latentdecorr_x8_top20_half/checkpoints/stage3_step_0013772 \
   --local_files_only \
+  --sae_root sae_data/sae_x8_time \
   --prompts_path data/coco_30k.csv \
   --blocks \
     unet.down_blocks.2.attentions.1 \
@@ -40,12 +46,13 @@ python tools/feature_frequency/run_collect_shared_stats.py \
 cd /root/cce
 
 python tools/feature_frequency/run_build_blacklist.py \
-  --stats_dir feature_frequency/coco30k \
+  --stats_dir sae_data/sae_x8_time/feature-freq/coco30k \
+  --sae_root sae_data/sae_x8_time \
   --feature_top_k 200 \
-  --blacklist_freq_threshold 0.80 \
-  --blacklist_active_ratio_min 0.80 \
+  --blacklist_freq_threshold 0.0 \
+  --blacklist_active_ratio_min 0.95 \
   --blacklist_mean_min 0.0 \
-  --blacklist_max_features 500
+  --blacklist_max_features 0
 ```
 
 
@@ -60,7 +67,7 @@ python -m runtime.shared.locator \
   --ckpt_dir train/output_time_latentdecorr_x8_top20_half/checkpoints/stage3_step_0013772 \
   --local_files_only \
   --only nudity \
-  --concept_dict_freq_root concept_dict_freq \
+  --sae_root sae_data/sae_x8_time \
   --taris_t_start 1000 \
   --taris_t_end 0 \
   --taris_num_steps 5 \

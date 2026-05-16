@@ -23,6 +23,7 @@ from .features.scoring import (
     _topk_with_blacklist,
 )
 from .io_utils import block_short_name, ensure_dir, safe_name
+from .sae_layout import maybe_use_sae_layout
 
 from .pipeline import (
     add_checkpoint_args,
@@ -57,6 +58,28 @@ class ActivationStats:
     timesteps: List[int]
 
 
+@dataclass
+class PromptGroup:
+    """父概念下的一组细粒度正负样本。"""
+
+    name: str
+    pos_prompts: List[str]
+    neg_prompts: List[str]
+
+
+@dataclass
+class BlockScores:
+    """单个子概念在单个 block 上的打分结果。"""
+
+    prompt_group: PromptGroup
+    pos_mu: torch.Tensor
+    neg_mu: torch.Tensor
+    neg_std: torch.Tensor
+    scores_primary: torch.Tensor
+    taris_scores: torch.Tensor | None
+    saeuron_scores: torch.Tensor | None
+
+
 def build_parser() -> argparse.ArgumentParser:
     """构建 SharedSAE 概念定位参数。"""
     parser = argparse.ArgumentParser(description="SharedSAE version of exp53 concept locator")
@@ -71,6 +94,18 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         default="./target_concept_dict",
         help="概念 json 文件夹（每个 json 文件名就是 concept_name）。",
+    )
+    g_main.add_argument(
+        "--concept_output_root",
+        type=str,
+        default="concept_dict",
+        help="概念定位输出根目录；建议按 SAE 分支分别命名，避免互相覆盖。",
+    )
+    g_main.add_argument(
+        "--sae_root",
+        type=str,
+        default="",
+        help="统一 SAE 产物根目录；传入后自动映射 concept-dig / blacklist 等子目录。",
     )
     g_main.add_argument(
         "--only",
@@ -134,6 +169,23 @@ def parse_args() -> argparse.Namespace:
     return build_parser().parse_args()
 
 
+def _resolve_layout_roots(args: argparse.Namespace) -> tuple[str, str]:
+    """解析 locator 需要的概念输出与 blacklist 根目录。"""
+    concept_output_root = maybe_use_sae_layout(
+        path_value=str(args.concept_output_root),
+        sae_root=str(getattr(args, "sae_root", "")),
+        legacy_default="concept_dict",
+        kind="concept_dig",
+    )
+    concept_dict_freq_root = maybe_use_sae_layout(
+        path_value=str(args.concept_dict_freq_root),
+        sae_root=str(getattr(args, "sae_root", "")),
+        legacy_default="concept_dict_freq",
+        kind="blacklist",
+    )
+    return concept_output_root, concept_dict_freq_root
+
+
 def _list_concepts(concept_dir: str) -> List[str]:
     """列出概念名称。"""
     root = Path(os.path.expanduser(str(concept_dir))).resolve()
@@ -148,6 +200,66 @@ def _truncate_prompts(prompts: Sequence[str], limit: int) -> List[str]:
     if int(limit) <= 0:
         return items
     return items[: int(limit)]
+
+
+def _strict_prompt_list(*, value, concept_name: str, group_name: str, field_name: str) -> List[str]:
+    """读取 subconcept prompt 列表，避免静默吞掉错误 schema。"""
+    if not isinstance(value, list):
+        raise ValueError(
+            f"概念 {concept_name} 的 subconcept={group_name} 需要 list 字段 {field_name}。"
+        )
+    prompts = [str(item).strip() for item in value if isinstance(item, str) and str(item).strip()]
+    if not prompts:
+        raise ValueError(
+            f"概念 {concept_name} 的 subconcept={group_name} 字段 {field_name} 为空。"
+        )
+    return prompts
+
+
+def _load_prompt_groups(
+    *,
+    concept_name: str,
+    concept_root: str,
+) -> Tuple[List[PromptGroup], Path]:
+    """加载普通概念或带 `subconcepts` 的复合概念定义。"""
+    pos_prompts, neg_prompts, raw_json, concept_json_path = _load_concept_prompts_from_json(
+        concept_name=str(concept_name),
+        concept_root=str(concept_root),
+    )
+    raw_subconcepts = raw_json.get("subconcepts")
+    if raw_subconcepts is None:
+        return [
+            PromptGroup(
+                name=str(concept_name),
+                pos_prompts=list(pos_prompts),
+                neg_prompts=list(neg_prompts),
+            )
+        ], concept_json_path
+    if not isinstance(raw_subconcepts, dict) or not raw_subconcepts:
+        raise ValueError(f"概念 {concept_name} 的 subconcepts 必须是非空 dict。")
+
+    groups: List[PromptGroup] = []
+    for group_name, spec in raw_subconcepts.items():
+        if not isinstance(spec, dict):
+            raise ValueError(f"概念 {concept_name} 的 subconcept={group_name} 必须是 dict。")
+        groups.append(
+            PromptGroup(
+                name=str(group_name),
+                pos_prompts=_strict_prompt_list(
+                    value=spec.get("pos_prompts"),
+                    concept_name=str(concept_name),
+                    group_name=str(group_name),
+                    field_name="pos_prompts",
+                ),
+                neg_prompts=_strict_prompt_list(
+                    value=spec.get("neg_prompts"),
+                    concept_name=str(concept_name),
+                    group_name=str(group_name),
+                    field_name="neg_prompts",
+                ),
+            )
+        )
+    return groups, concept_json_path
 
 
 def _resolve_blacklist_ids(*, block: str, out_dir: str, concept_dict_freq_root: str) -> set[int]:
@@ -309,6 +421,9 @@ def _save_meta(
     saeuron_eps: float,
     delta: float,
     ckpt_dir: Path,
+    prompt_group_name: str | None = None,
+    subconcept_names: Sequence[str] = (),
+    aggregate_mode: str | None = None,
 ) -> None:
     """保存概念统计的伴随说明。"""
     meta_path = os.path.join(out_dir, "taris_meta.txt")
@@ -316,8 +431,14 @@ def _save_meta(
         f.write(f"shared_sae_checkpoint={ckpt_dir}\n")
         f.write(f"block={block}\n")
         f.write(f"concept_name={concept_name_raw}\n")
+        if prompt_group_name is not None:
+            f.write(f"prompt_group_name={prompt_group_name}\n")
         f.write(f"concept_root={concept_root}\n")
         f.write(f"concept_json={concept_json_path}\n")
+        if subconcept_names:
+            f.write(f"subconcept_names={list(subconcept_names)}\n")
+        if aggregate_mode is not None:
+            f.write(f"aggregate_mode={aggregate_mode}\n")
         f.write(f"pos_prompts={list(pos_prompts)}\n")
         f.write(f"neg_prompts={list(neg_prompts)}\n")
         f.write(f"score_mode={score_label}\n")
@@ -329,9 +450,185 @@ def _save_meta(
         f.write("feature_time_scores.diff=normalized_diff(pos_mu/sum_pos - neg_mu/sum_neg)\n")
 
 
+def _aggregate_block_scores(block_scores: Sequence[BlockScores]) -> BlockScores:
+    """按 feature-wise max 聚合多个子概念，保留每个 feature 的来源时序。"""
+    if not block_scores:
+        raise ValueError("block_scores 不能为空。")
+    if len(block_scores) == 1:
+        return block_scores[0]
+
+    score_stack = torch.stack([item.scores_primary for item in block_scores], dim=0)
+    winner_idx = torch.argmax(score_stack, dim=0)
+    feature_idx = torch.arange(int(score_stack.shape[1]), device=winner_idx.device)
+
+    def _select(attr: str) -> torch.Tensor:
+        stacked = torch.stack([getattr(item, attr) for item in block_scores], dim=0)
+        return stacked[winner_idx, :, feature_idx].transpose(0, 1).contiguous()
+
+    def _max_optional(attr: str) -> torch.Tensor | None:
+        values = [getattr(item, attr) for item in block_scores]
+        if any(value is None for value in values):
+            return None
+        return torch.stack(values, dim=0).max(dim=0).values
+
+    merged_group = PromptGroup(
+        name="aggregate",
+        pos_prompts=[prompt for item in block_scores for prompt in item.prompt_group.pos_prompts],
+        neg_prompts=[prompt for item in block_scores for prompt in item.prompt_group.neg_prompts],
+    )
+    return BlockScores(
+        prompt_group=merged_group,
+        pos_mu=_select("pos_mu"),
+        neg_mu=_select("neg_mu"),
+        neg_std=_select("neg_std"),
+        scores_primary=score_stack.max(dim=0).values,
+        taris_scores=_max_optional("taris_scores"),
+        saeuron_scores=_max_optional("saeuron_scores"),
+    )
+
+
+def _save_block_outputs(
+    *,
+    block: str,
+    concept_output_name: str,
+    concept_name_raw: str,
+    concept_root: str,
+    concept_json_path: Path,
+    prompt_group_name: str | None,
+    subconcept_names: Sequence[str],
+    aggregate_mode: str | None,
+    pos_prompts: Sequence[str],
+    neg_prompts: Sequence[str],
+    step_indices: Sequence[int],
+    timesteps: Sequence[int],
+    score_label: str,
+    enable_compare: bool,
+    saeuron_eps: float,
+    delta: float,
+    ckpt_dir: Path,
+    concept_dict_freq_root: str,
+    top_k: int,
+    block_scores: BlockScores,
+    output_root: str,
+) -> None:
+    """保存单个概念输出目录的全部定位产物。"""
+    out_dir = os.path.join(str(output_root), block_short_name(str(block)), safe_name(str(concept_output_name)))
+    ensure_dir(out_dir)
+    blacklist_ids = _resolve_blacklist_ids(
+        block=str(block),
+        out_dir=out_dir,
+        concept_dict_freq_root=str(concept_dict_freq_root),
+    )
+    top_pos_ids, top_pos_vals, top_neg_ids, top_neg_vals = _topk_with_blacklist(
+        scores=block_scores.scores_primary,
+        top_k=int(top_k),
+        blacklist_ids=blacklist_ids,
+    )
+
+    taris_top = None
+    saeuron_top = None
+    if block_scores.taris_scores is not None:
+        taris_top = _topk_with_blacklist(
+            scores=block_scores.taris_scores,
+            top_k=int(top_k),
+            blacklist_ids=blacklist_ids,
+        )
+    if block_scores.saeuron_scores is not None:
+        saeuron_top = _topk_with_blacklist(
+            scores=block_scores.saeuron_scores,
+            top_k=int(top_k),
+            blacklist_ids=blacklist_ids,
+        )
+
+    _save_meta(
+        out_dir=out_dir,
+        block=str(block),
+        concept_name_raw=str(concept_name_raw),
+        concept_root=str(concept_root),
+        concept_json_path=concept_json_path,
+        pos_prompts=pos_prompts,
+        neg_prompts=neg_prompts,
+        step_indices=step_indices,
+        timesteps=timesteps,
+        score_label=score_label,
+        enable_compare=enable_compare,
+        saeuron_eps=saeuron_eps,
+        delta=float(delta),
+        ckpt_dir=ckpt_dir,
+        prompt_group_name=prompt_group_name,
+        subconcept_names=subconcept_names,
+        aggregate_mode=aggregate_mode,
+    )
+    _save_topk_csv(os.path.join(out_dir, "top_positive_features.csv"), top_ids=top_pos_ids, top_vals=top_pos_vals)
+    _save_topk_csv(os.path.join(out_dir, "top_negative_features.csv"), top_ids=top_neg_ids, top_vals=top_neg_vals)
+
+    if enable_compare and taris_top is not None and saeuron_top is not None:
+        taris_pos_ids, taris_pos_vals, taris_neg_ids, taris_neg_vals = taris_top
+        saeuron_pos_ids, saeuron_pos_vals, saeuron_neg_ids, saeuron_neg_vals = saeuron_top
+        _save_topk_csv(os.path.join(out_dir, "top_positive_features_taris.csv"), top_ids=taris_pos_ids, top_vals=taris_pos_vals)
+        _save_topk_csv(os.path.join(out_dir, "top_negative_features_taris.csv"), top_ids=taris_neg_ids, top_vals=taris_neg_vals)
+        _save_topk_csv(os.path.join(out_dir, "top_positive_features_saeuron.csv"), top_ids=saeuron_pos_ids, top_vals=saeuron_pos_vals)
+        _save_topk_csv(os.path.join(out_dir, "top_negative_features_saeuron.csv"), top_ids=saeuron_neg_ids, top_vals=saeuron_neg_vals)
+        _save_score_compare_csv(
+            os.path.join(out_dir, "score_compare_taris_vs_saeuron.csv"),
+            taris_scores=block_scores.taris_scores,
+            saeuron_scores=block_scores.saeuron_scores,
+        )
+
+    _save_feature_time_scores_csv(
+        os.path.join(out_dir, "feature_time_scores.csv"),
+        timesteps=timesteps,
+        feature_ids=top_pos_ids.tolist(),
+        scores_primary=block_scores.scores_primary,
+        score_mode=score_label,
+        pos_mu=block_scores.pos_mu,
+        neg_mu=block_scores.neg_mu,
+        neg_std=block_scores.neg_std,
+        taris_scores=block_scores.taris_scores,
+        saeuron_scores=block_scores.saeuron_scores,
+        saeuron_eps=saeuron_eps,
+        delta=float(delta),
+    )
+
+    torch.save(
+        {
+            "shared_sae_checkpoint": str(ckpt_dir),
+            "block": str(block),
+            "concept_name": str(concept_name_raw),
+            "concept_output_name": str(concept_output_name),
+            "prompt_group_name": prompt_group_name,
+            "subconcept_names": list(subconcept_names),
+            "aggregate_mode": aggregate_mode,
+            "pos_prompts": list(pos_prompts),
+            "neg_prompts": list(neg_prompts),
+            "timesteps": list(timesteps),
+            "selected_step_indices": list(map(int, step_indices)),
+            "score_mode": score_label,
+            "enable_score_compare": enable_compare,
+            "saeuron_eps": saeuron_eps,
+            "scores_primary": block_scores.scores_primary,
+            "scores_taris": block_scores.taris_scores,
+            "scores_saeuron": block_scores.saeuron_scores,
+            "top_positive_ids": top_pos_ids,
+            "top_positive_vals": top_pos_vals,
+            "top_negative_ids": top_neg_ids,
+            "top_negative_vals": top_neg_vals,
+            "pos_mu": block_scores.pos_mu,
+            "neg_mu": block_scores.neg_mu,
+            "neg_std": block_scores.neg_std,
+        },
+        os.path.join(out_dir, "taris_dump.pt"),
+    )
+    print(
+        f"[{LOG_PREFIX}] saved concept={concept_output_name} block={block} "
+        f"top1={int(top_pos_ids[0].item()) if int(top_pos_ids.numel()) > 0 else -1}"
+    )
+
+
 def main() -> None:
     """程序主入口。"""
     args = parse_args()
+    concept_output_root, concept_dict_freq_root = _resolve_layout_roots(args)
     ckpt_dir = resolve_checkpoint_dir(ckpt_dir=str(args.ckpt_dir), output_root=str(args.output_root))
     print(f"[{LOG_PREFIX}] 使用 checkpoint: {ckpt_dir}")
 
@@ -369,45 +666,68 @@ def main() -> None:
     )
 
     for concept_name_raw in concept_names:
-        pos_prompts, neg_prompts, _raw_json, concept_json_path = _load_concept_prompts_from_json(
+        prompt_groups, concept_json_path = _load_prompt_groups(
             concept_name=str(concept_name_raw),
             concept_root=str(args.concept_dir),
         )
-        pos_prompts = _truncate_prompts(pos_prompts, int(args.max_prompts_per_side))
-        neg_prompts = _truncate_prompts(neg_prompts, int(args.max_prompts_per_side))
-        if not pos_prompts or not neg_prompts:
-            raise ValueError(f"概念 {concept_name_raw} 截断后 pos/neg 为空。")
+        prompt_groups = [
+            PromptGroup(
+                name=group.name,
+                pos_prompts=_truncate_prompts(group.pos_prompts, int(args.max_prompts_per_side)),
+                neg_prompts=_truncate_prompts(group.neg_prompts, int(args.max_prompts_per_side)),
+            )
+            for group in prompt_groups
+        ]
+        for group in prompt_groups:
+            if not group.pos_prompts or not group.neg_prompts:
+                raise ValueError(f"概念 {concept_name_raw} 的 subconcept={group.name} 截断后 pos/neg 为空。")
 
-        print(f"[{LOG_PREFIX}] run concept={concept_name_raw} pos={len(pos_prompts)} neg={len(neg_prompts)}")
-        pos_stats = _compute_activation_stats(
-            pipe=pipe,
-            model=bundle.model,
-            blocks=blocks,
-            norm_scale_by_block=norm_scale_by_block,
-            prompts=pos_prompts,
-            steps=steps,
-            guidance_scale=guidance_scale,
-            resolution=resolution,
-            seed=int(args.seed),
-            track_std=False,
+        print(
+            f"[{LOG_PREFIX}] run concept={concept_name_raw} "
+            f"groups={[group.name for group in prompt_groups]}"
         )
-        neg_stats = _compute_activation_stats(
-            pipe=pipe,
-            model=bundle.model,
-            blocks=blocks,
-            norm_scale_by_block=norm_scale_by_block,
-            prompts=neg_prompts,
-            steps=steps,
-            guidance_scale=guidance_scale,
-            resolution=resolution,
-            seed=int(args.seed),
-            track_std=True,
-        )
-        if list(pos_stats.timesteps) != list(neg_stats.timesteps):
-            raise ValueError("正负样本的 scheduler timesteps 不一致。")
+        stats_by_group: Dict[str, Tuple[ActivationStats, ActivationStats]] = {}
+        reference_timesteps: List[int] | None = None
+        for group in prompt_groups:
+            print(
+                f"[{LOG_PREFIX}]   group={group.name} "
+                f"pos={len(group.pos_prompts)} neg={len(group.neg_prompts)}"
+            )
+            pos_stats = _compute_activation_stats(
+                pipe=pipe,
+                model=bundle.model,
+                blocks=blocks,
+                norm_scale_by_block=norm_scale_by_block,
+                prompts=group.pos_prompts,
+                steps=steps,
+                guidance_scale=guidance_scale,
+                resolution=resolution,
+                seed=int(args.seed),
+                track_std=False,
+            )
+            neg_stats = _compute_activation_stats(
+                pipe=pipe,
+                model=bundle.model,
+                blocks=blocks,
+                norm_scale_by_block=norm_scale_by_block,
+                prompts=group.neg_prompts,
+                steps=steps,
+                guidance_scale=guidance_scale,
+                resolution=resolution,
+                seed=int(args.seed),
+                track_std=True,
+            )
+            if list(pos_stats.timesteps) != list(neg_stats.timesteps):
+                raise ValueError("正负样本的 scheduler timesteps 不一致。")
+            if reference_timesteps is None:
+                reference_timesteps = list(pos_stats.timesteps)
+            elif reference_timesteps != list(pos_stats.timesteps):
+                raise ValueError("不同 subconcept 的 scheduler timesteps 不一致。")
+            stats_by_group[group.name] = (pos_stats, neg_stats)
 
+        assert reference_timesteps is not None
         step_indices = _select_step_indices(
-            pos_stats.timesteps,
+            reference_timesteps,
             t_start=int(args.taris_t_start),
             t_end=int(args.taris_t_end),
             num_t_samples=int(args.taris_num_steps),
@@ -415,149 +735,108 @@ def main() -> None:
         score_mode = str(args.taris_score_mode).strip().lower()
         enable_compare = bool(args.taris_compare_scores)
         saeuron_eps = float(args.taris_saeuron_eps)
+        is_composite = len(prompt_groups) > 1
+        subconcept_names = [group.name for group in prompt_groups] if is_composite else []
 
         for block in blocks:
-            pos_mu = pos_stats.mean_by_block[str(block)]
-            neg_mu = neg_stats.mean_by_block[str(block)]
-            neg_std = neg_stats.std_by_block[str(block)]
+            block_scores: List[BlockScores] = []
+            for group in prompt_groups:
+                pos_stats, neg_stats = stats_by_group[group.name]
+                pos_mu = pos_stats.mean_by_block[str(block)]
+                neg_mu = neg_stats.mean_by_block[str(block)]
+                neg_std = neg_stats.std_by_block[str(block)]
 
-            need_taris = (score_mode == "taris") or enable_compare
-            need_saeuron = (score_mode == "saeuron") or enable_compare
-            taris_scores = (
-                _taris_score(
-                    pos_mu=pos_mu,
-                    neg_mu=neg_mu,
-                    step_indices=step_indices,
-                    delta=float(args.taris_delta),
+                need_taris = (score_mode == "taris") or enable_compare
+                need_saeuron = (score_mode == "saeuron") or enable_compare
+                taris_scores = (
+                    _taris_score(
+                        pos_mu=pos_mu,
+                        neg_mu=neg_mu,
+                        step_indices=step_indices,
+                        delta=float(args.taris_delta),
+                    )
+                    if need_taris
+                    else None
                 )
-                if need_taris
-                else None
-            )
-            saeuron_scores = (
-                _saeuron_score_v2(
+                saeuron_scores = (
+                    _saeuron_score_v2(
+                        pos_mu=pos_mu,
+                        neg_mu=neg_mu,
+                        neg_std=neg_std,
+                        step_indices=step_indices,
+                        epsilon=saeuron_eps,
+                    )
+                    if need_saeuron
+                    else None
+                )
+                if score_mode == "taris":
+                    assert taris_scores is not None
+                    scores_primary = taris_scores
+                    score_label = "taris"
+                else:
+                    assert saeuron_scores is not None
+                    scores_primary = saeuron_scores
+                    score_label = "saeuron"
+
+                current_scores = BlockScores(
+                    prompt_group=group,
                     pos_mu=pos_mu,
                     neg_mu=neg_mu,
                     neg_std=neg_std,
-                    step_indices=step_indices,
-                    epsilon=saeuron_eps,
+                    scores_primary=scores_primary,
+                    taris_scores=taris_scores,
+                    saeuron_scores=saeuron_scores,
                 )
-                if need_saeuron
-                else None
-            )
+                block_scores.append(current_scores)
 
-            if score_mode == "taris":
-                assert taris_scores is not None
-                scores_primary = taris_scores
-                score_label = "taris"
-            else:
-                assert saeuron_scores is not None
-                scores_primary = saeuron_scores
-                score_label = "saeuron"
+                if is_composite:
+                    _save_block_outputs(
+                        block=str(block),
+                        concept_output_name=f"{concept_name_raw}__{group.name}",
+                        concept_name_raw=str(concept_name_raw),
+                        concept_root=str(args.concept_dir),
+                        concept_json_path=concept_json_path,
+                        prompt_group_name=group.name,
+                        subconcept_names=[],
+                        aggregate_mode=None,
+                        pos_prompts=group.pos_prompts,
+                        neg_prompts=group.neg_prompts,
+                        step_indices=step_indices,
+                        timesteps=reference_timesteps,
+                        score_label=score_label,
+                        enable_compare=enable_compare,
+                        saeuron_eps=saeuron_eps,
+                        delta=float(args.taris_delta),
+                        ckpt_dir=bundle.ckpt_dir,
+                        concept_dict_freq_root=str(concept_dict_freq_root),
+                        top_k=int(args.taris_top_k),
+                        block_scores=current_scores,
+                        output_root=str(concept_output_root),
+                    )
 
-            out_dir = os.path.join("concept_dict", block_short_name(str(block)), safe_name(str(concept_name_raw)))
-            ensure_dir(out_dir)
-
-            blacklist_ids = _resolve_blacklist_ids(
+            aggregate_scores = _aggregate_block_scores(block_scores)
+            _save_block_outputs(
                 block=str(block),
-                out_dir=out_dir,
-                concept_dict_freq_root=str(args.concept_dict_freq_root),
-            )
-            top_pos_ids, top_pos_vals, top_neg_ids, top_neg_vals = _topk_with_blacklist(
-                scores=scores_primary,
-                top_k=int(args.taris_top_k),
-                blacklist_ids=blacklist_ids,
-            )
-
-            taris_top = None
-            saeuron_top = None
-            if taris_scores is not None:
-                taris_top = _topk_with_blacklist(
-                    scores=taris_scores,
-                    top_k=int(args.taris_top_k),
-                    blacklist_ids=blacklist_ids,
-                )
-            if saeuron_scores is not None:
-                saeuron_top = _topk_with_blacklist(
-                    scores=saeuron_scores,
-                    top_k=int(args.taris_top_k),
-                    blacklist_ids=blacklist_ids,
-                )
-
-            _save_meta(
-                out_dir=out_dir,
-                block=str(block),
+                concept_output_name=str(concept_name_raw),
                 concept_name_raw=str(concept_name_raw),
                 concept_root=str(args.concept_dir),
                 concept_json_path=concept_json_path,
-                pos_prompts=pos_prompts,
-                neg_prompts=neg_prompts,
+                prompt_group_name=None if is_composite else prompt_groups[0].name,
+                subconcept_names=subconcept_names,
+                aggregate_mode="featurewise_max" if is_composite else None,
+                pos_prompts=aggregate_scores.prompt_group.pos_prompts,
+                neg_prompts=aggregate_scores.prompt_group.neg_prompts,
                 step_indices=step_indices,
-                timesteps=pos_stats.timesteps,
+                timesteps=reference_timesteps,
                 score_label=score_label,
                 enable_compare=enable_compare,
                 saeuron_eps=saeuron_eps,
                 delta=float(args.taris_delta),
                 ckpt_dir=bundle.ckpt_dir,
-            )
-            _save_topk_csv(os.path.join(out_dir, "top_positive_features.csv"), top_ids=top_pos_ids, top_vals=top_pos_vals)
-            _save_topk_csv(os.path.join(out_dir, "top_negative_features.csv"), top_ids=top_neg_ids, top_vals=top_neg_vals)
-
-            if enable_compare and taris_top is not None and saeuron_top is not None:
-                taris_pos_ids, taris_pos_vals, taris_neg_ids, taris_neg_vals = taris_top
-                saeuron_pos_ids, saeuron_pos_vals, saeuron_neg_ids, saeuron_neg_vals = saeuron_top
-                _save_topk_csv(os.path.join(out_dir, "top_positive_features_taris.csv"), top_ids=taris_pos_ids, top_vals=taris_pos_vals)
-                _save_topk_csv(os.path.join(out_dir, "top_negative_features_taris.csv"), top_ids=taris_neg_ids, top_vals=taris_neg_vals)
-                _save_topk_csv(os.path.join(out_dir, "top_positive_features_saeuron.csv"), top_ids=saeuron_pos_ids, top_vals=saeuron_pos_vals)
-                _save_topk_csv(os.path.join(out_dir, "top_negative_features_saeuron.csv"), top_ids=saeuron_neg_ids, top_vals=saeuron_neg_vals)
-                _save_score_compare_csv(
-                    os.path.join(out_dir, "score_compare_taris_vs_saeuron.csv"),
-                    taris_scores=taris_scores,
-                    saeuron_scores=saeuron_scores,
-                )
-
-            _save_feature_time_scores_csv(
-                os.path.join(out_dir, "feature_time_scores.csv"),
-                timesteps=pos_stats.timesteps,
-                feature_ids=top_pos_ids.tolist(),
-                scores_primary=scores_primary,
-                score_mode=score_label,
-                pos_mu=pos_mu,
-                neg_mu=neg_mu,
-                neg_std=neg_std,
-                taris_scores=taris_scores,
-                saeuron_scores=saeuron_scores,
-                saeuron_eps=saeuron_eps,
-                delta=float(args.taris_delta),
-            )
-
-            torch.save(
-                {
-                    "shared_sae_checkpoint": str(bundle.ckpt_dir),
-                    "block": str(block),
-                    "concept_name": str(concept_name_raw),
-                    "pos_prompts": list(pos_prompts),
-                    "neg_prompts": list(neg_prompts),
-                    "timesteps": list(pos_stats.timesteps),
-                    "selected_step_indices": list(map(int, step_indices)),
-                    "score_mode": score_label,
-                    "enable_score_compare": enable_compare,
-                    "saeuron_eps": saeuron_eps,
-                    "scores_primary": scores_primary,
-                    "scores_taris": taris_scores,
-                    "scores_saeuron": saeuron_scores,
-                    "top_positive_ids": top_pos_ids,
-                    "top_positive_vals": top_pos_vals,
-                    "top_negative_ids": top_neg_ids,
-                    "top_negative_vals": top_neg_vals,
-                    "pos_mu": pos_mu,
-                    "neg_mu": neg_mu,
-                    "neg_std": neg_std,
-                },
-                os.path.join(out_dir, "taris_dump.pt"),
-            )
-            print(
-                f"[{LOG_PREFIX}] saved concept={concept_name_raw} block={block} "
-                f"top1={int(top_pos_ids[0].item()) if int(top_pos_ids.numel()) > 0 else -1}"
+                concept_dict_freq_root=str(concept_dict_freq_root),
+                top_k=int(args.taris_top_k),
+                block_scores=aggregate_scores,
+                output_root=str(concept_output_root),
             )
 
 

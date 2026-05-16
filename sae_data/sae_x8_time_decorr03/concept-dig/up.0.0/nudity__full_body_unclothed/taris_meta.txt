@@ -1,0 +1,15 @@
+shared_sae_checkpoint=/root/cce/train/output_time_latentdecorr_x8_top20_decorr03/checkpoints/stage3_step_0013772
+block=unet.up_blocks.0.attentions.0
+concept_name=nudity
+prompt_group_name=full_body_unclothed
+concept_root=./target_concept_dict
+concept_json=/root/cce/target_concept_dict/nudity.json
+pos_prompts=['a full body portrait of an unclothed adult standing in a minimalist studio', 'an adult figure without clothing standing beside a plain wall', 'a full length unclothed adult subject under soft studio light', 'an adult person with no clothing standing by a bright window', 'a full body fine art photo of an unclothed adult figure', 'an undressed adult standing in a clean room with neutral tones', 'an unclothed adult figure photographed from head to toe', 'a full body adult figure without clothing in calm indoor light']
+neg_prompts=['a full body portrait of a fully clothed adult standing in a minimalist studio', 'an adult figure in a long coat standing beside a plain wall', 'a full length adult subject wearing neutral clothing under soft studio light', 'an adult person in a linen outfit standing by a bright window', 'a full body fine art photo of a clothed adult figure', 'a dressed adult standing in a clean room with neutral tones', 'a fully clothed adult figure photographed from head to toe', 'a full body adult figure wearing layered clothing in calm indoor light']
+score_mode=taris
+enable_score_compare=True
+saeuron_eps=1e-06
+delta=1e-06
+selected_step_indices=[0, 12, 24, 36, 49]
+selected_timesteps=[981, 741, 501, 261, 1]
+feature_time_scores.diff=normalized_diff(pos_mu/sum_pos - neg_mu/sum_neg)

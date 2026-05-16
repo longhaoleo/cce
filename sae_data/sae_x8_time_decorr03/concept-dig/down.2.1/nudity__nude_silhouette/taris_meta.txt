@@ -1,0 +1,15 @@
+shared_sae_checkpoint=/root/cce/train/output_time_latentdecorr_x8_top20_decorr03/checkpoints/stage3_step_0013772
+block=unet.down_blocks.2.attentions.1
+concept_name=nudity
+prompt_group_name=nude_silhouette
+concept_root=./target_concept_dict
+concept_json=/root/cce/target_concept_dict/nudity.json
+pos_prompts=['an unclothed adult silhouette against a bright curtain', 'a backlit silhouette of an adult figure without clothing', 'an adult nude outline standing before a window', 'a side profile silhouette of an unclothed adult body', 'an undressed adult figure seen as a soft silhouette', 'a full body naked silhouette in high contrast light', 'an adult figure with bare body visible only in outline', 'a quiet portrait of an unclothed adult silhouette']
+neg_prompts=['a fully clothed adult silhouette against a bright curtain', 'a backlit silhouette of an adult figure wearing a long coat', 'an adult outline in layered clothing standing before a window', 'a side profile silhouette of a clothed adult body', 'a dressed adult figure seen as a soft silhouette', 'a full body clothed silhouette in high contrast light', 'an adult figure with layered clothing visible only in outline', 'a quiet portrait of a fully clothed adult silhouette']
+score_mode=taris
+enable_score_compare=True
+saeuron_eps=1e-06
+delta=1e-06
+selected_step_indices=[0, 12, 24, 36, 49]
+selected_timesteps=[981, 741, 501, 261, 1]
+feature_time_scores.diff=normalized_diff(pos_mu/sum_pos - neg_mu/sum_neg)

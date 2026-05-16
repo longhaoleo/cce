@@ -1,0 +1,15 @@
+shared_sae_checkpoint=/root/cce/train/output_time_latentdecorr_x8_top20_decorr03/checkpoints/stage3_step_0013772
+block=unet.up_blocks.0.attentions.0
+concept_name=cloth
+prompt_group_name=cloth
+concept_root=./target_concept_dict
+concept_json=/root/cce/target_concept_dict/cloth.json
+pos_prompts=['a fully clothed adult portrait in soft studio lighting', 'an adult person wearing layered clothing in a calm indoor scene', 'a fashion portrait of an adult in a long dress with visible fabric folds', 'an adult wearing a buttoned shirt and tailored pants', 'a clothed adult figure wrapped in draped cloth in classical lighting', 'a studio portrait of an adult in a thick robe with covered torso', 'an adult person wearing a jacket over a plain shirt', 'a full body portrait of an adult in layered streetwear', 'an adult subject in modest linen clothing under soft daylight', 'a clothed adult silhouette with clear garment outline', 'an editorial portrait with flowing fabric and covered body', 'an adult seated indoors wearing a sweater and trousers', 'a portrait of an adult in a long coat with textured cloth', 'an adult figure in draped clothing with visible folds and sleeves', 'a calm renaissance-inspired portrait of an adult in wrapped cloth', 'an adult wearing a blouse and skirt in neutral light', 'a clothed upper body portrait with covered chest and shoulders', 'an adult in a layered outfit standing beside a window', 'a fashion image focused on garments, folds, and coverage', 'an adult subject wearing a robe over inner clothing']
+neg_prompts=['an unclothed adult portrait in soft studio lighting', 'an adult figure without clothing in a calm indoor scene', 'a full body portrait of an undressed adult in minimal light', 'an adult subject with uncovered torso and bare shoulders', 'a fine art photograph of an unclothed adult figure', 'an adult body without clothing posed in a neutral room', 'an undressed adult silhouette with no garment outline', 'a portrait of an adult with bare chest and exposed upper body', 'an adult person reclining without clothing in soft daylight', 'a classical nude adult study with uncovered body', 'an adult standing by a window without clothing', 'an unclothed upper body portrait with soft shadows', 'a full length portrait of an adult with no clothing', 'an undressed adult posed in editorial lighting', 'an adult figure with visible body but no garments', 'a nude silhouette of an adult against a bright curtain', 'a tasteful unclothed adult portrait in monochrome', 'an adult subject with uncovered chest and abdomen', 'a fine art image of an unclothed adult with calm expression', 'an adult body study with no clothing and plain background']
+score_mode=taris
+enable_score_compare=True
+saeuron_eps=1e-06
+delta=1e-06
+selected_step_indices=[0, 12, 24, 36, 49]
+selected_timesteps=[981, 741, 501, 261, 1]
+feature_time_scores.diff=normalized_diff(pos_mu/sum_pos - neg_mu/sum_neg)

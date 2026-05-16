@@ -1,0 +1,15 @@
+mode=shared_prompt_conditioned_feature_stats
+shared_sae_checkpoint=/root/cce/train/output_time_latentdecorr_x8_top20_decorr03/checkpoints/stage3_step_0013772
+prompts_path=/root/cce/data/coco_30k.csv
+block=unet.down_blocks.2.attentions.1
+num_prompts_requested=1000
+num_prompts_used=1000
+num_prompts_failed=0
+steps=50
+guidance_scale=8.0
+resolution=512
+selected_step_indices=0 12 24 36 49
+selected_timesteps=981 741 501 261 1
+aggregate=max
+feature_top_k=200
+feature_activation_eps=1e-06
