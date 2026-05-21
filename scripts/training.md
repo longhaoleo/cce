@@ -63,6 +63,65 @@ python train/run_train.py \
 - `val_recon` 是否明显变差。
 - `dead_feature_frac` 是否明显升高。
 
+## Run Now: Latent Decorrelation v2
+
+这一组使用新版相关性损失：
+
+- 固定 `offdiag-only`
+- 支持 `latent_decorr_mode=token/block_pooled`
+- 支持 `latent_decorr_pool=mean/topq/hybrid`
+
+推荐先跑 `block_pooled_mean`，它最贴近“跨 block pooled 语义去冗余”的假设。
+
+```bash
+cd /root/cce
+
+VARIANT=block_pooled_mean ./scripts/run_latent_decorr_v2_train.sh
+```
+
+可选对照：
+
+```bash
+cd /root/cce
+
+VARIANT=token ./scripts/run_latent_decorr_v2_train.sh
+VARIANT=block_pooled_topq ./scripts/run_latent_decorr_v2_train.sh
+VARIANT=block_pooled_hybrid ./scripts/run_latent_decorr_v2_train.sh
+```
+
+默认输出：
+
+```text
+train/output_time_latentdecorr_v2_token
+train/output_time_latentdecorr_v2_block_pooled_mean
+train/output_time_latentdecorr_v2_block_pooled_topq
+train/output_time_latentdecorr_v2_block_pooled_hybrid
+```
+
+脚本默认沿用当前 `x8/top20 + time warmup + strong latent decorrelation` 配置：
+
+```text
+latent_decorr_weight=0.3
+latent_decorr_top_k=512
+latent_decorr_pool_topq=0.1
+stage2_train_prompts=10000
+validation_prompts=500
+calibration_prompts=500
+```
+
+快速小试可以覆盖环境变量：
+
+```bash
+cd /root/cce
+
+VARIANT=block_pooled_mean \
+STAGE2_TRAIN_PROMPTS=1000 \
+VALIDATION_PROMPTS=100 \
+CALIBRATION_PROMPTS=100 \
+SHARD_PROMPTS=100 \
+./scripts/run_latent_decorr_v2_train.sh
+```
+
 ## Pilot
 
 ```bash

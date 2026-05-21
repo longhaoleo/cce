@@ -32,9 +32,12 @@ class InterventionSpec:
     use_stat_time_weight: bool = False
     stat_time_weight_scale: float = 1.0
     use_learned_time_weight: bool = False
+    learned_time_weight_mode: str = "relative_window"
     learned_time_weight_scale: float = 1.0
     learned_time_weight_temperature: float = 1.0
     learned_time_weight_transform: str = "neutral_sigmoid"
+    learned_time_weight_target_mean: float = 0.001
+    learned_time_weight_smooth_radius: int = 2
     time_fuse_mode: str = "stat_only"
     time_weight_scale: float = 1.0
     inject_coeff_by_step: Dict[int, torch.Tensor] = field(default_factory=dict)
@@ -44,6 +47,7 @@ class InterventionSpec:
     inject_learned_time_weight_scale: float = 1.0
     inject_time_weight_scale: float = 1.0
     projection_ridge: float = 1e-4
+    max_delta_over_x: float = 0.0
     step_start: Optional[int] = None
     step_end: Optional[int] = None
     apply_only_conditional: bool = True
@@ -141,6 +145,8 @@ def _fuse_time_weights(
     stat_weight: torch.Tensor | None,
     learned_weight: torch.Tensor | None,
     mode: str,
+    learned_mode: str = "absolute",
+    learned_target_mean: float = 0.001,
     device,
     dtype,
     n_features: int,
@@ -153,16 +159,22 @@ def _fuse_time_weights(
     if learned_weight is None:
         learned_weight = torch.ones(int(n_features), device=device, dtype=dtype)
     mode_norm = str(mode).strip().lower()
+    learned_mode_norm = str(learned_mode).strip().lower()
     if mode_norm == "stat_only":
         return stat_weight
     if mode_norm == "learned_only":
+        if learned_mode_norm == "relative_window":
+            return learned_weight * float(learned_target_mean)
         return learned_weight
     if mode_norm == "product":
         return stat_weight * learned_weight
+    learned_for_additive = (
+        learned_weight * float(learned_target_mean) if learned_mode_norm == "relative_window" else learned_weight
+    )
     if mode_norm == "sum":
-        return 0.5 * (stat_weight + learned_weight)
+        return 0.5 * (stat_weight + learned_for_additive)
     if mode_norm == "max":
-        return torch.maximum(stat_weight, learned_weight)
+        return torch.maximum(stat_weight, learned_for_additive)
     raise ValueError(f"未知 time fuse mode: {mode}")
 
 
@@ -414,6 +426,8 @@ def build_feature_intervention_hook(
             stat_weight=stat_weight,
             learned_weight=learned_weight,
             mode=str(getattr(spec, "time_fuse_mode", "stat_only")),
+            learned_mode=str(getattr(spec, "learned_time_weight_mode", "absolute")),
+            learned_target_mean=float(getattr(spec, "learned_time_weight_target_mean", 0.001)),
             device=flat.device,
             dtype=flat.dtype,
             n_features=len(ids),
@@ -443,11 +457,19 @@ def build_feature_intervention_hook(
         recon = _maybe_apply_spatial_norm_weight(recon=recon, flat=flat, meta=meta, spec=spec)
         dbg["mean_abs_recon_final"] = float(recon.detach().abs().mean().item())
 
-        flat_new = flat - g * recon
-        mean_abs_delta = float((g * recon).detach().abs().mean().item())
+        delta = g * recon
+        mean_abs_delta = float(delta.detach().abs().mean().item())
         mean_abs_x = float(flat.detach().abs().mean().item())
+        delta_ratio = float(mean_abs_delta / (mean_abs_x + 1e-12))
+        max_delta_over_x = float(getattr(spec, "max_delta_over_x", 0.0) or 0.0)
+        if max_delta_over_x > 0.0 and delta_ratio > max_delta_over_x:
+            safety_scale = float(max_delta_over_x / (delta_ratio + 1e-12))
+            delta = delta * safety_scale
+            mean_abs_delta = float(delta.detach().abs().mean().item())
+            delta_ratio = float(mean_abs_delta / (mean_abs_x + 1e-12))
+        flat_new = flat - delta
         dbg["mean_abs_delta_x"] = mean_abs_delta
-        dbg["delta_over_x"] = float(mean_abs_delta / (mean_abs_x + 1e-12))
+        dbg["delta_over_x"] = delta_ratio
         dbg["active"] = 1
         state["debug_rows"].append(dbg)
 

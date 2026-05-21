@@ -47,4 +47,22 @@
 ## 6. 下一步
 
 - 在有 `torch` 的训练环境运行 `python -m unittest tests/test_latent_decorr_and_time_weight.py`。
-- 用 `car / dog / nudity` 跑 `A_no_time / B_stat_time / C_learned_time`，对比 target suppression 与 LPIPS / DreamSim / CLIP。
+- 先校准时间权重量纲，再用 `car / dog / nudity` 跑 `A_no_time / B_stat_time / C_learned_time`，对比 target suppression 与 LPIPS / DreamSim / CLIP。
+
+## 7. 2026-05-21 更新：learned time 量纲修正
+
+- 观察结果：`stat_time` 的 `final_time_weight` 约为 `1e-3`，而旧 `learned_time = 2 * sigmoid(raw)` 约为 `1`，在 `int_scale=5000` 下会把干预放大数百倍，表现接近 `no_time` 并导致黑图。
+- 代码修正：
+  - 新增 `--int_learned_time_weight_mode {relative_window,absolute}`，默认使用 `relative_window`。
+  - `relative_window` 会先在全部 denoising step 上计算 `time_branch_raw`，做 moving average、按时间维 z-score，再用 sigmoid 形成相对时间窗口，并按 feature 的时间均值归一到约 1。
+  - `learned_only` 时使用 `learned_rel * --int_learned_time_weight_target_mean`，默认 `0.001`。
+  - `product` 时使用 `stat_weight * learned_rel`，让 learned branch 只改变统计权重的时间形状。
+  - 保留 `absolute` 作为兼容旧行为。
+- 新增安全阈值：`--int_max_delta_over_x`，建议大批量消融先用 `0.1` 或 `0.2`，防止单组参数直接生成黑图。
+- 新增诊断字段：
+  - `int_scale`
+  - `effective_gain_mean`
+  - `effective_gain_max`
+  - `learned_temporal_cv`
+  - `learned_temporal_range`
+  - `delta_safety_scale`

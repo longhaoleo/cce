@@ -69,9 +69,12 @@ class TimeInterventionConfig:
     use_stat_weight: bool = True
     stat_weight_scale: float = 1.0
     use_learned_weight: bool = False
+    learned_weight_mode: str = "relative_window"
     learned_weight_scale: float = 1.0
     learned_weight_temperature: float = 1.0
     learned_weight_transform: str = "neutral_sigmoid"
+    learned_weight_target_mean: float = 0.001
+    learned_weight_smooth_radius: int = 2
     fuse_mode: str = "stat_only"
     t_start: int = 900
     t_end: int = 100
@@ -97,6 +100,7 @@ class SharedInterventionConfig:
     projection_ridge: float = 1e-4
     use_out_adapter_for_decode: bool = False
     apply_only_conditional: bool = True
+    max_delta_over_x: float = 0.0
     time: TimeInterventionConfig = field(default_factory=TimeInterventionConfig)
     spatial: SpatialInterventionConfig = field(default_factory=SpatialInterventionConfig)
 
@@ -246,10 +250,17 @@ def add_intervention_args(
         help="是否使用 SAE time_branch 产生的 learned time weight。",
     )
     group.add_argument(
+        "--int_learned_time_weight_mode",
+        type=str,
+        default="relative_window",
+        choices=["relative_window", "absolute"],
+        help="learned time 的使用方式：relative_window 只学习时间形状；absolute 保留旧绝对倍率。",
+    )
+    group.add_argument(
         "--int_learned_time_weight_scale",
         type=float,
         default=1.0,
-        help="learned time weight 的全局倍率。",
+        help="learned time weight 的全局倍率；relative_window 下作用在平均为 1 的相对窗口上。",
     )
     group.add_argument(
         "--int_learned_time_weight_temperature",
@@ -262,7 +273,19 @@ def add_intervention_args(
         type=str,
         default="neutral_sigmoid",
         choices=["neutral_sigmoid", "relu", "abs", "sigmoid"],
-        help="learned time weight 的正权重转换方式。",
+        help="absolute 模式下 learned time weight 的正权重转换方式。",
+    )
+    group.add_argument(
+        "--int_learned_time_weight_target_mean",
+        type=float,
+        default=0.001,
+        help="relative_window + learned_only 时使用的目标平均时间权重量级。",
+    )
+    group.add_argument(
+        "--int_learned_time_weight_smooth_radius",
+        type=int,
+        default=2,
+        help="relative_window 计算 raw 时间曲线时的 moving-average 半径；0 表示不平滑。",
     )
     group.add_argument(
         "--int_time_fuse_mode",
@@ -293,6 +316,12 @@ def add_intervention_args(
         default=False,
         help="是否在概念重建时把 out_adapter 也算进去；默认关闭。",
     )
+    group.add_argument(
+        "--int_max_delta_over_x",
+        type=float,
+        default=0.0,
+        help=">0 时限制每个 hook step 的平均 |delta| / |x|，用于防止大批量消融直接黑图。",
+    )
 
 
 def build_intervention_cfg_from_args(args: argparse.Namespace) -> SharedInterventionConfig:
@@ -316,13 +345,17 @@ def build_intervention_cfg_from_args(args: argparse.Namespace) -> SharedInterven
         projection_ridge=float(args.int_projection_ridge),
         use_out_adapter_for_decode=bool(args.use_out_adapter_for_decode),
         apply_only_conditional=True,
+        max_delta_over_x=float(getattr(args, "int_max_delta_over_x", 0.0)),
         time=TimeInterventionConfig(
             use_stat_weight=bool(use_stat_time_weight),
             stat_weight_scale=float(getattr(args, "int_stat_time_weight_scale", 1.0)),
             use_learned_weight=bool(getattr(args, "int_use_learned_time_weight", False)),
+            learned_weight_mode=str(getattr(args, "int_learned_time_weight_mode", "relative_window")),
             learned_weight_scale=float(getattr(args, "int_learned_time_weight_scale", 1.0)),
             learned_weight_temperature=float(getattr(args, "int_learned_time_weight_temperature", 1.0)),
             learned_weight_transform=str(getattr(args, "int_learned_time_weight_transform", "neutral_sigmoid")),
+            learned_weight_target_mean=float(getattr(args, "int_learned_time_weight_target_mean", 0.001)),
+            learned_weight_smooth_radius=int(getattr(args, "int_learned_time_weight_smooth_radius", 2)),
             fuse_mode=str(getattr(args, "int_time_fuse_mode", "stat_only")),
             t_start=int(args.int_t_start),
             t_end=int(args.int_t_end),
@@ -499,6 +532,8 @@ def _fuse_time_weights(
     stat_weight: torch.Tensor | None,
     learned_weight: torch.Tensor | None,
     mode: str,
+    learned_mode: str = "absolute",
+    learned_target_mean: float = 0.001,
     device,
     dtype,
     n_features: int,
@@ -511,17 +546,123 @@ def _fuse_time_weights(
     if learned_weight is None:
         learned_weight = torch.ones(int(n_features), device=device, dtype=dtype)
     mode_norm = str(mode).strip().lower()
+    learned_mode_norm = str(learned_mode).strip().lower()
     if mode_norm == "stat_only":
         return stat_weight
     if mode_norm == "learned_only":
+        if learned_mode_norm == "relative_window":
+            return learned_weight * float(learned_target_mean)
         return learned_weight
     if mode_norm == "product":
         return stat_weight * learned_weight
+    learned_for_additive = (
+        learned_weight * float(learned_target_mean) if learned_mode_norm == "relative_window" else learned_weight
+    )
     if mode_norm == "sum":
-        return 0.5 * (stat_weight + learned_weight)
+        return 0.5 * (stat_weight + learned_for_additive)
     if mode_norm == "max":
-        return torch.maximum(stat_weight, learned_weight)
+        return torch.maximum(stat_weight, learned_for_additive)
     raise ValueError(f"未知 time fuse mode: {mode}")
+
+
+def _smooth_time_series(values: torch.Tensor, *, radius: int) -> torch.Tensor:
+    """沿 step 维做轻量 moving average。"""
+    r = int(radius)
+    if r <= 0 or int(values.shape[0]) <= 1:
+        return values
+    rows = []
+    n = int(values.shape[0])
+    for idx in range(n):
+        lo = max(0, idx - r)
+        hi = min(n, idx + r + 1)
+        rows.append(values[lo:hi].mean(dim=0))
+    return torch.stack(rows, dim=0)
+
+
+@torch.no_grad()
+def _learned_time_weight_for_step(
+    *,
+    sae: SharedSAE,
+    timesteps,
+    step_idx: int,
+    timestep_t: torch.Tensor,
+    feature_ids: List[int],
+    mode: str,
+    transform: str,
+    temperature: float,
+    scale: float,
+    smooth_radius: int,
+    cache: Dict[Tuple[object, ...], Dict[str, torch.Tensor | float]],
+) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, float]]:
+    """返回当前 step 的 learned raw/weight，并在 relative 模式下按全时间窗归一。"""
+    device = sae.latent_bias.device
+    dtype = sae.latent_bias.dtype
+    ids_key = tuple(int(fid) for fid in feature_ids)
+    mode_norm = str(mode).strip().lower()
+    temp = max(float(temperature), 1e-6)
+    scale_f = float(scale)
+    radius = max(0, int(smooth_radius))
+
+    if mode_norm == "absolute":
+        raw, weight = sae.get_learned_time_weight(
+            timestep=timestep_t,
+            feature_ids=list(ids_key),
+            transform=str(transform),
+            temperature=float(temperature),
+            scale=scale_f,
+        )
+        return raw.to(device=device, dtype=dtype), weight.to(device=device, dtype=dtype), {
+            "learned_temporal_cv": 0.0,
+            "learned_temporal_range": 0.0,
+        }
+
+    if timesteps is None:
+        timestep_values = [float(timestep_t.reshape(-1)[0].item())]
+    else:
+        timestep_values = [float(t.item() if hasattr(t, "item") else t) for t in timesteps]
+    if not timestep_values:
+        timestep_values = [float(timestep_t.reshape(-1)[0].item())]
+    safe_step = min(max(0, int(step_idx)), len(timestep_values) - 1)
+    cache_key = ("relative_window", ids_key, tuple(round(x, 6) for x in timestep_values), temp, scale_f, radius)
+    cached = cache.get(cache_key)
+    if cached is None:
+        raw_rows = []
+        for t_val in timestep_values:
+            raw, _weight = sae.get_learned_time_weight(
+                timestep=torch.tensor([float(t_val)], device=device, dtype=dtype),
+                feature_ids=list(ids_key),
+                transform="neutral_sigmoid",
+                temperature=1.0,
+                scale=1.0,
+            )
+            raw_rows.append(raw.to(device=device, dtype=dtype))
+        raw_tf = torch.stack(raw_rows, dim=0) if raw_rows else torch.zeros(1, len(ids_key), device=device, dtype=dtype)
+        smooth = _smooth_time_series(raw_tf, radius=radius)
+        centered = smooth - smooth.mean(dim=0, keepdim=True)
+        std = smooth.std(dim=0, keepdim=True, unbiased=False).clamp_min(1e-6)
+        raw_z = centered / std
+        learned_rel = torch.sigmoid(raw_z / temp)
+        learned_rel = learned_rel / learned_rel.mean(dim=0, keepdim=True).clamp_min(1e-6)
+        learned_rel = learned_rel * scale_f
+        mean = learned_rel.detach().float().mean().clamp_min(1e-12)
+        std_all = learned_rel.detach().float().std(unbiased=False)
+        cached = {
+            "raw_tf": raw_tf,
+            "weight_tf": learned_rel,
+            "learned_temporal_cv": float((std_all / mean).item()),
+            "learned_temporal_range": float((learned_rel.detach().float().max() - learned_rel.detach().float().min()).item()),
+        }
+        cache[cache_key] = cached
+
+    raw_tf = cached["raw_tf"]
+    weight_tf = cached["weight_tf"]
+    assert isinstance(raw_tf, torch.Tensor)
+    assert isinstance(weight_tf, torch.Tensor)
+    stats = {
+        "learned_temporal_cv": float(cached.get("learned_temporal_cv", 0.0)),
+        "learned_temporal_range": float(cached.get("learned_temporal_range", 0.0)),
+    }
+    return raw_tf[safe_step].to(device=device, dtype=dtype), weight_tf[safe_step].to(device=device, dtype=dtype), stats
 
 
 def _tensor_or_blank(values: torch.Tensor | None, idx: int) -> str | float:
@@ -547,6 +688,9 @@ def _record_time_weight_rows(
     coeff_base: torch.Tensor,
     coeff_final: torch.Tensor,
     debug_row: Dict[str, object],
+    int_scale: float,
+    learned_temporal_cv: float | str = "",
+    learned_temporal_range: float | str = "",
 ) -> None:
     """记录 long/summary 两种时间权重诊断行。"""
     long_rows = getattr(hook, "time_weight_long_rows", None)
@@ -607,10 +751,20 @@ def _record_time_weight_rows(
             "learned_weight_max": _max_or_blank(learned_weight),
             "final_weight_mean": _mean_or_blank(final_time_weight),
             "final_weight_max": _max_or_blank(final_time_weight),
+            "int_scale": float(int_scale),
+            "effective_gain_mean": (
+                "" if final_time_weight is None else float(int_scale) * float(final_time_weight.detach().abs().float().mean().item())
+            ),
+            "effective_gain_max": (
+                "" if final_time_weight is None else float(int_scale) * float(final_time_weight.detach().abs().float().max().item())
+            ),
+            "learned_temporal_cv": learned_temporal_cv,
+            "learned_temporal_range": learned_temporal_range,
             "mean_abs_c_base": float(coeff_base.detach().abs().mean().item()),
             "mean_abs_c_final": float(coeff_final.detach().abs().mean().item()),
             "mean_abs_delta_x": float(debug_row.get("mean_abs_delta_x", 0.0) or 0.0),
             "delta_over_x": float(debug_row.get("delta_over_x", 0.0) or 0.0),
+            "delta_safety_scale": float(debug_row.get("delta_safety_scale", 1.0) or 1.0),
             "top_feature_ids_final": top_ids,
             "top_feature_weights_final": top_weights,
         }
@@ -715,6 +869,7 @@ def build_shared_feature_intervention_hook(
         raise ValueError(f"不支持的干预模式: {spec.mode}")
 
     state = {"step": 0, "debug_rows": []}
+    learned_time_cache: Dict[Tuple[object, ...], Dict[str, torch.Tensor | float]] = {}
     feature_ids_raw, feature_scales_raw = _resolve_feature_list(spec)
     inject_feature_ids_raw = [int(fid) for fid in getattr(spec, "inject_feature_ids", ())]
     inject_feature_scales_raw = [float(scale) for scale in getattr(spec, "inject_feature_scales", ())]
@@ -741,6 +896,7 @@ def build_shared_feature_intervention_hook(
             "mean_abs_recon_final": 0.0,
             "mean_abs_delta_x": 0.0,
             "delta_over_x": 0.0,
+            "delta_safety_scale": 1.0,
             "active_feature_ids_time": "",
             "active_feature_ids_final": "",
             "top_feature_ids_final": "",
@@ -814,13 +970,20 @@ def build_shared_feature_intervention_hook(
 
         learned_raw = None
         learned_weight = None
+        learned_stats: Dict[str, float] = {}
         if bool(getattr(spec, "use_learned_time_weight", False)):
-            learned_raw, learned_weight = sae.get_learned_time_weight(
+            learned_raw, learned_weight, learned_stats = _learned_time_weight_for_step(
+                sae=sae,
+                timesteps=timesteps,
+                step_idx=step_idx,
                 timestep=timestep_t,
                 feature_ids=ids,
+                mode=str(getattr(spec, "learned_time_weight_mode", "absolute")),
                 transform=str(getattr(spec, "learned_time_weight_transform", "neutral_sigmoid")),
                 temperature=float(getattr(spec, "learned_time_weight_temperature", 1.0)),
                 scale=float(getattr(spec, "learned_time_weight_scale", 1.0)),
+                smooth_radius=int(getattr(spec, "learned_time_weight_smooth_radius", 2)),
+                cache=learned_time_cache,
             )
             learned_raw = learned_raw.to(device=params.device, dtype=params.dtype)
             learned_weight = learned_weight.to(device=params.device, dtype=params.dtype)
@@ -829,6 +992,8 @@ def build_shared_feature_intervention_hook(
             stat_weight=stat_weight,
             learned_weight=learned_weight,
             mode=str(getattr(spec, "time_fuse_mode", "stat_only")),
+            learned_mode=str(getattr(spec, "learned_time_weight_mode", "absolute")),
+            learned_target_mean=float(getattr(spec, "learned_time_weight_target_mean", 0.001)),
             device=params.device,
             dtype=params.dtype,
             n_features=len(ids),
@@ -884,14 +1049,25 @@ def build_shared_feature_intervention_hook(
 
         gain = float(spec.scale)
         flat_new = flat_out.to(device=recon.device, dtype=recon.dtype)
+        signed_delta = gain * recon
         if mode == "injection":
-            flat_new = flat_new + gain * recon
+            delta_sign = 1.0
         else:
-            flat_new = flat_new - gain * recon
-        mean_abs_delta = float((gain * recon).detach().abs().mean().item())
+            delta_sign = -1.0
+        mean_abs_delta = float(signed_delta.detach().abs().mean().item())
         mean_abs_x = float(flat_out.detach().abs().mean().item())
+        delta_ratio = float(mean_abs_delta / (mean_abs_x + 1e-12))
+        max_delta_over_x = float(getattr(spec, "max_delta_over_x", 0.0) or 0.0)
+        safety_scale = 1.0
+        if max_delta_over_x > 0.0 and delta_ratio > max_delta_over_x:
+            safety_scale = float(max_delta_over_x / (delta_ratio + 1e-12))
+            signed_delta = signed_delta * safety_scale
+            mean_abs_delta = float(signed_delta.detach().abs().mean().item())
+            delta_ratio = float(mean_abs_delta / (mean_abs_x + 1e-12))
+        flat_new = flat_new + float(delta_sign) * signed_delta
         dbg["mean_abs_delta_x"] = mean_abs_delta
-        dbg["delta_over_x"] = float(mean_abs_delta / (mean_abs_x + 1e-12))
+        dbg["delta_over_x"] = delta_ratio
+        dbg["delta_safety_scale"] = safety_scale
         _record_time_weight_rows(
             hook=hook,
             concept=str(getattr(spec, "targetconcept", "") or ""),
@@ -907,6 +1083,9 @@ def build_shared_feature_intervention_hook(
             coeff_base=coeff_base,
             coeff_final=coeff_final,
             debug_row=dbg,
+            int_scale=gain,
+            learned_temporal_cv=learned_stats.get("learned_temporal_cv", ""),
+            learned_temporal_range=learned_stats.get("learned_temporal_range", ""),
         )
 
         if mode == "replace":
@@ -948,13 +1127,20 @@ def build_shared_feature_intervention_hook(
 
             inject_learned_raw = None
             inject_learned_weight = None
+            inject_learned_stats: Dict[str, float] = {}
             if bool(getattr(spec, "inject_use_learned_time_weight", getattr(spec, "use_learned_time_weight", False))):
-                inject_learned_raw, inject_learned_weight = sae.get_learned_time_weight(
+                inject_learned_raw, inject_learned_weight, inject_learned_stats = _learned_time_weight_for_step(
+                    sae=sae,
+                    timesteps=timesteps,
+                    step_idx=step_idx,
                     timestep=timestep_t,
                     feature_ids=inject_ids,
+                    mode=str(getattr(spec, "learned_time_weight_mode", "absolute")),
                     transform=str(getattr(spec, "learned_time_weight_transform", "neutral_sigmoid")),
                     temperature=float(getattr(spec, "learned_time_weight_temperature", 1.0)),
                     scale=float(getattr(spec, "inject_learned_time_weight_scale", spec.learned_time_weight_scale)),
+                    smooth_radius=int(getattr(spec, "learned_time_weight_smooth_radius", 2)),
+                    cache=learned_time_cache,
                 )
                 inject_learned_raw = inject_learned_raw.to(device=params.device, dtype=params.dtype)
                 inject_learned_weight = inject_learned_weight.to(device=params.device, dtype=params.dtype)
@@ -963,6 +1149,8 @@ def build_shared_feature_intervention_hook(
                 stat_weight=inject_stat_weight,
                 learned_weight=inject_learned_weight,
                 mode=str(getattr(spec, "time_fuse_mode", "stat_only")),
+                learned_mode=str(getattr(spec, "learned_time_weight_mode", "absolute")),
+                learned_target_mean=float(getattr(spec, "learned_time_weight_target_mean", 0.001)),
                 device=params.device,
                 dtype=params.dtype,
                 n_features=len(inject_ids),
@@ -987,9 +1175,17 @@ def build_shared_feature_intervention_hook(
                 spec=spec,
             )
             inject_gain = float(spec.inject_scale)
-            flat_new = flat_new + inject_gain * inject_recon
+            inject_delta = inject_gain * inject_recon
+            inject_mean_abs_delta = float(inject_delta.detach().abs().mean().item())
+            inject_ratio = float(inject_mean_abs_delta / (mean_abs_x + 1e-12))
+            inject_safety_scale = 1.0
+            if max_delta_over_x > 0.0 and inject_ratio > max_delta_over_x:
+                inject_safety_scale = float(max_delta_over_x / (inject_ratio + 1e-12))
+                inject_delta = inject_delta * inject_safety_scale
+                inject_mean_abs_delta = float(inject_delta.detach().abs().mean().item())
+            flat_new = flat_new + inject_delta
             dbg["mean_abs_recon_inject"] = float(inject_recon.detach().abs().mean().item())
-            dbg["mean_abs_delta_x_inject"] = float((inject_gain * inject_recon).detach().abs().mean().item())
+            dbg["mean_abs_delta_x_inject"] = inject_mean_abs_delta
 
             inject_per_feat_abs = inject_coeff_final.detach().abs().mean(dim=0)
             inject_active_pos = (inject_per_feat_abs > 1e-12).nonzero(as_tuple=False).flatten().tolist()
@@ -1020,8 +1216,12 @@ def build_shared_feature_intervention_hook(
                 debug_row={
                     **dbg,
                     "mean_abs_delta_x": dbg.get("mean_abs_delta_x_inject", 0.0),
+                    "delta_safety_scale": inject_safety_scale,
                     "delta_over_x": 0.0,
                 },
+                int_scale=inject_gain,
+                learned_temporal_cv=inject_learned_stats.get("learned_temporal_cv", ""),
+                learned_temporal_range=inject_learned_stats.get("learned_temporal_range", ""),
             )
 
         dbg["active"] = 1
@@ -1060,6 +1260,7 @@ def _build_intervention_spec(
         scale=float(block_scale_map[block]),
         inject_scale=float(cfg.inject_scale if inject_block_scale_map is None else inject_block_scale_map[block]),
         projection_ridge=float(cfg.projection_ridge),
+        max_delta_over_x=float(cfg.max_delta_over_x),
         t_start=int(cfg.time.t_start),
         t_end=int(cfg.time.t_end),
         use_spatial_norm_weight=bool(cfg.spatial.use_norm_weight),
@@ -1069,9 +1270,12 @@ def _build_intervention_spec(
         use_stat_time_weight=bool(cfg.time.use_stat_weight),
         stat_time_weight_scale=float(cfg.time.stat_weight_scale),
         use_learned_time_weight=bool(cfg.time.use_learned_weight),
+        learned_time_weight_mode=str(cfg.time.learned_weight_mode),
         learned_time_weight_scale=float(cfg.time.learned_weight_scale),
         learned_time_weight_temperature=float(cfg.time.learned_weight_temperature),
         learned_time_weight_transform=str(cfg.time.learned_weight_transform),
+        learned_time_weight_target_mean=float(cfg.time.learned_weight_target_mean),
+        learned_time_weight_smooth_radius=int(cfg.time.learned_weight_smooth_radius),
         time_fuse_mode=str(cfg.time.fuse_mode),
         time_weight_scale=float(cfg.time.stat_weight_scale),
         inject_use_stat_time_weight=bool(cfg.time.use_stat_weight),
@@ -1151,10 +1355,16 @@ def _save_time_weight_debug_csv(*, hooks: Dict[str, object], out_dir: str) -> No
             "learned_weight_max",
             "final_weight_mean",
             "final_weight_max",
+            "int_scale",
+            "effective_gain_mean",
+            "effective_gain_max",
+            "learned_temporal_cv",
+            "learned_temporal_range",
             "mean_abs_c_base",
             "mean_abs_c_final",
             "mean_abs_delta_x",
             "delta_over_x",
+            "delta_safety_scale",
             "top_feature_ids_final",
             "top_feature_weights_final",
         ]

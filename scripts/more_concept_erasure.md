@@ -143,6 +143,86 @@ for concept in cat bird flower bicycle chair anime_style text; do
 done
 ```
 
+## 3.1 时间权重消融校准
+
+当前 learned time 默认改成 `relative_window`：它只负责时间形状，不再直接当绝对擦除倍率。建议先用 `nudity` 做小批量校准。
+
+```bash
+cd /root/cce
+
+# A_no_time: 不使用任何时间权重，先从小 int_scale 起步。
+python -m runtime.shared.batch \
+  --ckpt_dir train/output_time_latentdecorr_x8_top20_decorr03/checkpoints/stage3_step_0013772 \
+  --local_files_only \
+  --sae_root sae_data/sae_x8_time_decorr03 \
+  --prompts_path batch_test_prompt/nudity.csv \
+  --concepts nudity \
+  --max_prompts 5 \
+  --int_scale 5 \
+  --int_inject_scale 5 \
+  --no-int_use_stat_time_weight \
+  --no-int_use_learned_time_weight \
+  --int_max_delta_over_x 0.2 \
+  --output_dir image_output/sae_x8_time_decorr03/time_ablation_A_no_time_scale5
+
+# B_stat_time: 旧统计时间权重，仍可用大 int_scale。
+python -m runtime.shared.batch \
+  --ckpt_dir train/output_time_latentdecorr_x8_top20_decorr03/checkpoints/stage3_step_0013772 \
+  --local_files_only \
+  --sae_root sae_data/sae_x8_time_decorr03 \
+  --prompts_path batch_test_prompt/nudity.csv \
+  --concepts nudity \
+  --max_prompts 5 \
+  --int_scale 5000 \
+  --int_inject_scale 5000 \
+  --int_use_stat_time_weight \
+  --no-int_use_learned_time_weight \
+  --int_time_fuse_mode stat_only \
+  --int_max_delta_over_x 0.2 \
+  --output_dir image_output/sae_x8_time_decorr03/time_ablation_B_stat_time_scale5000
+
+# C_learned_time: learned relative window，平均量级先对齐到 1e-3。
+python -m runtime.shared.batch \
+  --ckpt_dir train/output_time_latentdecorr_x8_top20_decorr03/checkpoints/stage3_step_0013772 \
+  --local_files_only \
+  --sae_root sae_data/sae_x8_time_decorr03 \
+  --prompts_path batch_test_prompt/nudity.csv \
+  --concepts nudity \
+  --max_prompts 5 \
+  --int_scale 5000 \
+  --int_inject_scale 5000 \
+  --no-int_use_stat_time_weight \
+  --int_use_learned_time_weight \
+  --int_learned_time_weight_mode relative_window \
+  --int_learned_time_weight_target_mean 0.001 \
+  --int_time_fuse_mode learned_only \
+  --int_max_delta_over_x 0.2 \
+  --output_dir image_output/sae_x8_time_decorr03/time_ablation_C_learned_rel_scale5000
+
+# D_stat_x_learned_rel: 推荐主线，统计权重定量纲，learned 分支只调时间窗口形状。
+python -m runtime.shared.batch \
+  --ckpt_dir train/output_time_latentdecorr_x8_top20_decorr03/checkpoints/stage3_step_0013772 \
+  --local_files_only \
+  --sae_root sae_data/sae_x8_time_decorr03 \
+  --prompts_path batch_test_prompt/nudity.csv \
+  --concepts nudity \
+  --max_prompts 5 \
+  --int_scale 5000 \
+  --int_inject_scale 5000 \
+  --int_use_stat_time_weight \
+  --int_use_learned_time_weight \
+  --int_learned_time_weight_mode relative_window \
+  --int_time_fuse_mode product \
+  --int_max_delta_over_x 0.2 \
+  --output_dir image_output/sae_x8_time_decorr03/time_ablation_D_stat_x_learned_rel_scale5000
+```
+
+重点看每个 case 目录里的：
+
+- `diag_time_weights_summary.csv`：`effective_gain_mean/max`、`delta_over_x`、`delta_safety_scale`
+- `diag_time_weights_heatmap.png`：不同 timestep、不同 feature 的最终权重
+- `diag_top_feature_final_activation.png`：经过时间系数处理后的 top feature 平均激活
+
 只想先看每个概念前 4 条：
 
 ```bash

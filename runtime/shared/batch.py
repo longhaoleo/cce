@@ -409,6 +409,9 @@ def main() -> None:
                     "int_use_time_weight": bool(intervention_cfg.time.use_stat_weight),
                     "int_use_stat_time_weight": bool(intervention_cfg.time.use_stat_weight),
                     "int_use_learned_time_weight": bool(intervention_cfg.time.use_learned_weight),
+                    "int_learned_time_weight_mode": str(intervention_cfg.time.learned_weight_mode),
+                    "int_learned_time_weight_target_mean": float(intervention_cfg.time.learned_weight_target_mean),
+                    "int_max_delta_over_x": float(intervention_cfg.max_delta_over_x),
                     "int_time_fuse_mode": str(intervention_cfg.time.fuse_mode),
                 }
                 mf.write(json.dumps(rec, ensure_ascii=False) + "\n")
