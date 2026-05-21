@@ -75,6 +75,8 @@ class TrainConfig:
     calibration_prompts: int = 1000
     shard_prompts: int = 250
     split_seed: int = 2026
+    norm_scale_cache_path: str = ""
+    reuse_norm_scale_cache: bool = True
 
     d_model: int = 1280
     expansion_factor: int = 4
@@ -233,6 +235,7 @@ class TrainConfig:
         data["n_dirs"] = int(self.n_dirs)
         data["prompts_csv"] = str(Path(self.prompts_csv))
         data["output_root"] = str(Path(self.output_root))
+        data["norm_scale_cache_path"] = str(Path(self.norm_scale_cache_path)) if str(self.norm_scale_cache_path).strip() else ""
         return data
 
     def ensure_paths(self) -> None:
@@ -247,6 +250,8 @@ class TrainConfig:
         """
         self.prompts_csv = str(Path(self.prompts_csv).expanduser())
         self.output_root = str(Path(self.output_root).expanduser())
+        if str(self.norm_scale_cache_path).strip():
+            self.norm_scale_cache_path = str(Path(self.norm_scale_cache_path).expanduser())
         if str(self.model_local_dir).strip():
             self.model_local_dir = str(Path(self.model_local_dir).expanduser())
         Path(self.output_root).mkdir(parents=True, exist_ok=True)

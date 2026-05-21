@@ -36,10 +36,16 @@ SHARD_PROMPTS="${SHARD_PROMPTS:-250}"
 LATENT_DECORR_WEIGHT="${LATENT_DECORR_WEIGHT:-0.3}"
 LATENT_DECORR_TOP_K="${LATENT_DECORR_TOP_K:-512}"
 LATENT_DECORR_POOL_TOPQ="${LATENT_DECORR_POOL_TOPQ:-0.1}"
+NORM_SCALE_CACHE_PATH="${NORM_SCALE_CACHE_PATH:-}"
+NORM_SCALE_CACHE_ARGS=()
+if [[ -n "${NORM_SCALE_CACHE_PATH}" ]]; then
+  NORM_SCALE_CACHE_ARGS=(--norm_scale_cache_path "${NORM_SCALE_CACHE_PATH}")
+fi
 
 echo "[latent-decorr-v2] variant=${VARIANT}"
 echo "[latent-decorr-v2] output_root=${OUTPUT_ROOT}"
 echo "[latent-decorr-v2] mode=${DECORR_MODE} pool=${DECORR_POOL} topq=${LATENT_DECORR_POOL_TOPQ}"
+echo "[latent-decorr-v2] norm_scale_cache=${NORM_SCALE_CACHE_PATH:-auto}"
 
 python train/run_train.py \
   --experiment_preset custom \
@@ -68,5 +74,6 @@ python train/run_train.py \
   --latent_decorr_pool "${DECORR_POOL}" \
   --latent_decorr_pool_topq "${LATENT_DECORR_POOL_TOPQ}" \
   --latent_decorr_eps 1e-4 \
+  "${NORM_SCALE_CACHE_ARGS[@]}" \
   --group_bs 0 \
   --save_every_steps 0

@@ -177,9 +177,15 @@ def parse_args() -> argparse.Namespace:
     return build_parser().parse_args()
 
 
-def _step_or_none(value: int) -> Optional[int]:
-    """将负值 step 边界转换为 None。"""
-    return None if int(value) < 0 else int(value)
+def _resolve_timestep_window(args: argparse.Namespace) -> tuple[int, int]:
+    """解析统一的 scheduler timestep window 参数。"""
+    window = getattr(args, "int_timestep_window", None)
+    if window is None:
+        return 1000, 0
+    if len(window) != 2:
+        raise ValueError("--int_timestep_window 需要两个整数: START END")
+    a, b = int(window[0]), int(window[1])
+    return a, b
 
 
 def add_intervention_args(
@@ -300,10 +306,14 @@ def add_intervention_args(
         default="concept_dict_freq",
         help="全局高频特征 blacklist 根目录，用于擦除前二次过滤。",
     )
-    group.add_argument("--int_t_start", type=int, default=1000, help="干预时间窗上界（高噪声侧）；默认收窄到 900。")
-    group.add_argument("--int_t_end", type=int, default=0, help="干预时间窗下界（低噪声侧）；默认收窄到 100。")
-    group.add_argument("--int_step_start", type=int, default=-1, help=">=0 时启用 step 下界。")
-    group.add_argument("--int_step_end", type=int, default=-1, help=">=0 时启用 step 上界。")
+    group.add_argument(
+        "--int_timestep_window",
+        nargs=2,
+        type=int,
+        default=None,
+        metavar=("START", "END"),
+        help="统一干预 scheduler timestep 窗口；例：--int_timestep_window 1000 800。",
+    )
     group.add_argument(
         "--int_use_spatial_weight",
         action=argparse.BooleanOptionalAction,
@@ -337,6 +347,7 @@ def build_intervention_cfg_from_args(args: argparse.Namespace) -> SharedInterven
     stat_arg = getattr(args, "int_use_stat_time_weight", None)
     compat_arg = getattr(args, "int_use_time_weight", None)
     use_stat_time_weight = bool(stat_arg if stat_arg is not None else (compat_arg if compat_arg is not None else True))
+    t_start, t_end = _resolve_timestep_window(args)
     return SharedInterventionConfig(
         mode=str(args.int_mode),
         scale=float(args.int_scale),
@@ -357,10 +368,10 @@ def build_intervention_cfg_from_args(args: argparse.Namespace) -> SharedInterven
             learned_weight_target_mean=float(getattr(args, "int_learned_time_weight_target_mean", 0.001)),
             learned_weight_smooth_radius=int(getattr(args, "int_learned_time_weight_smooth_radius", 2)),
             fuse_mode=str(getattr(args, "int_time_fuse_mode", "stat_only")),
-            t_start=int(args.int_t_start),
-            t_end=int(args.int_t_end),
-            step_start=_step_or_none(int(args.int_step_start)),
-            step_end=_step_or_none(int(args.int_step_end)),
+            t_start=int(t_start),
+            t_end=int(t_end),
+            step_start=None,
+            step_end=None,
         ),
         spatial=SpatialInterventionConfig(
             use_norm_weight=bool(args.int_use_spatial_weight),

@@ -6,6 +6,7 @@ Shared SAE 训练入口脚本。
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -192,6 +193,18 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=250,
         help="每个 prompt 分片的大小；影响 CPU 内存占用和采样批次时长。",
+    )
+    g_data.add_argument(
+        "--norm_scale_cache_path",
+        type=str,
+        default="",
+        help="block 归一化系数缓存 JSON；为空时使用按配置自动命名的 train/cache/norm_scale_by_block/*.json。",
+    )
+    g_data.add_argument(
+        "--reuse_norm_scale_cache",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="若缓存存在且配置匹配，是否复用 norm_scale_by_block，避免重复跑 calibration 预统计。",
     )
 
     g_model = ap.add_argument_group("SAE 主结构")
@@ -431,6 +444,8 @@ def build_config(args: argparse.Namespace) -> TrainConfig:
         calibration_prompts=int(args.calibration_prompts),
         num_step_buckets=int(args.num_step_buckets),
         shard_prompts=int(args.shard_prompts),
+        norm_scale_cache_path=str(args.norm_scale_cache_path),
+        reuse_norm_scale_cache=bool(args.reuse_norm_scale_cache),
         expansion_factor=int(args.expansion_factor),
         top_k=int(args.top_k),
         auxk=int(args.auxk),
@@ -534,6 +549,93 @@ def save_run_manifest(output_root: str, payload: Dict) -> None:
         json.dump(payload, f, ensure_ascii=False, indent=2)
 
 
+def _norm_scale_cache_fingerprint(cfg: TrainConfig, calibration_records: List) -> tuple[str, Dict]:
+    """生成 block norm 预统计 cache 的配置指纹。"""
+    payload = {
+        "cache_version": 1,
+        "prompts_csv": str(Path(cfg.prompts_csv).expanduser().resolve()),
+        "model_id": str(cfg.model_id),
+        "model_local_dir": str(Path(cfg.model_local_dir).expanduser().resolve()) if str(cfg.model_local_dir).strip() else "",
+        "local_files_only": bool(cfg.local_files_only),
+        "dtype": str(cfg.dtype),
+        "steps": int(cfg.steps),
+        "guidance_scale": float(cfg.guidance_scale),
+        "resolution": int(cfg.resolution),
+        "base_seed": int(cfg.base_seed),
+        "split_seed": int(cfg.split_seed),
+        "max_prompts_debug": int(cfg.max_prompts_debug),
+        "validation_prompts": int(cfg.validation_prompts),
+        "stage2_train_prompts": int(cfg.stage2_train_prompts),
+        "calibration_prompts": int(cfg.calibration_prompts),
+        "num_step_buckets": int(cfg.num_step_buckets),
+        "blocks": list(cfg.blocks),
+        "d_model": int(cfg.d_model),
+        "expected_h": int(cfg.expected_h),
+        "expected_w": int(cfg.expected_w),
+        "calibration_records": [
+            {
+                "prompt_id": int(rec.prompt_id),
+                "seed": int(rec.seed),
+                "prompt_sha1": hashlib.sha1(str(rec.prompt).encode("utf-8")).hexdigest(),
+            }
+            for rec in calibration_records
+        ],
+    }
+    blob = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(blob).hexdigest()[:20], payload
+
+
+def _resolve_norm_scale_cache_path(cfg: TrainConfig, fingerprint: str) -> Path:
+    """解析 block norm 预统计 cache 路径。"""
+    if str(cfg.norm_scale_cache_path).strip():
+        return Path(cfg.norm_scale_cache_path).expanduser().resolve()
+    repo_root = Path(__file__).resolve().parents[1]
+    return repo_root / "train" / "cache" / "norm_scale_by_block" / f"{fingerprint}.json"
+
+
+def _load_norm_scale_cache(path: Path, *, fingerprint: str, blocks: List[str]) -> Dict[str, float] | None:
+    """如果 cache 存在且配置匹配，读取 norm_scale_by_block。"""
+    if not path.exists():
+        return None
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            payload = json.load(f)
+    except Exception as exc:
+        print(f"[train] norm scale cache 读取失败，重新统计: {path} ({exc})")
+        return None
+    if str(payload.get("fingerprint", "")) != str(fingerprint):
+        print(f"[train] norm scale cache 指纹不匹配，重新统计: {path}")
+        return None
+    raw_scales = payload.get("norm_scale_by_block", {})
+    if not isinstance(raw_scales, dict):
+        return None
+    missing = [str(block) for block in blocks if str(block) not in raw_scales]
+    if missing:
+        print(f"[train] norm scale cache 缺少 block={missing}，重新统计: {path}")
+        return None
+    return {str(block): float(raw_scales[str(block)]) for block in blocks}
+
+
+def _save_norm_scale_cache(
+    path: Path,
+    *,
+    fingerprint: str,
+    metadata: Dict,
+    norm_scale_by_block: Dict[str, float],
+) -> None:
+    """保存 block norm 预统计结果，供后续训练复用。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "fingerprint": str(fingerprint),
+        "metadata": metadata,
+        "norm_scale_by_block": {str(k): float(v) for k, v in norm_scale_by_block.items()},
+    }
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with tmp.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    tmp.replace(path)
+
+
 def main() -> None:
     """主入口：执行完整四阶段训练流程。
 
@@ -575,13 +677,28 @@ def main() -> None:
         expected_w=cfg.expected_w,
     )
 
-    print("[train] 估计 block 归一化系数 s_b ...")
-    norm_scale_by_block = estimate_block_scales(
-        sampler=sampler,
-        calibration_records=split["calibration"],
-        blocks=cfg.blocks,
-        d_model=cfg.d_model,
-    )
+    cache_fp, cache_meta = _norm_scale_cache_fingerprint(cfg, split["calibration"])
+    cache_path = _resolve_norm_scale_cache_path(cfg, cache_fp)
+    norm_scale_by_block = None
+    if bool(cfg.reuse_norm_scale_cache):
+        norm_scale_by_block = _load_norm_scale_cache(cache_path, fingerprint=cache_fp, blocks=list(cfg.blocks))
+        if norm_scale_by_block is not None:
+            print(f"[train] 复用 block 归一化系数 cache: {cache_path}")
+    if norm_scale_by_block is None:
+        print("[train] 估计 block 归一化系数 s_b ...")
+        norm_scale_by_block = estimate_block_scales(
+            sampler=sampler,
+            calibration_records=split["calibration"],
+            blocks=cfg.blocks,
+            d_model=cfg.d_model,
+        )
+        _save_norm_scale_cache(
+            cache_path,
+            fingerprint=cache_fp,
+            metadata=cache_meta,
+            norm_scale_by_block=norm_scale_by_block,
+        )
+        print(f"[train] 已保存 block 归一化系数 cache: {cache_path}")
     print(f"[train] norm_scale_by_block={norm_scale_by_block}")
 
     print("[train] 构建 Shared SAE 模型 ...")
@@ -652,6 +769,8 @@ def main() -> None:
         payload={
             "config": cfg.to_dict(),
             "norm_scale_by_block": norm_scale_by_block,
+            "norm_scale_cache_path": str(cache_path),
+            "norm_scale_cache_fingerprint": str(cache_fp),
             "split_sizes": summarize_split(split),
             "stage_results": stage_results,
             "curve_paths": curve_paths,

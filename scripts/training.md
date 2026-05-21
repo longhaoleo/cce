@@ -109,6 +109,20 @@ validation_prompts=500
 calibration_prompts=500
 ```
 
+训练开始前的 `norm_scale_by_block` 预统计会自动缓存到：
+
+```text
+train/cache/norm_scale_by_block/<config_fingerprint>.json
+```
+
+后续只要 model / prompt split / calibration / sampling 配置一致，会直接复用缓存，不会每次重跑 calibration。需要指定固定 cache 文件时：
+
+```bash
+NORM_SCALE_CACHE_PATH=train/cache/norm_scale_by_block/sdxl_512_steps50_coco500.json \
+VARIANT=block_pooled_mean \
+./scripts/run_latent_decorr_v2_train.sh
+```
+
 快速小试可以覆盖环境变量：
 
 ```bash

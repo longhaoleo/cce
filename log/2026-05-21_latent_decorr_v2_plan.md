@@ -66,3 +66,29 @@
   - `learned_temporal_cv`
   - `learned_temporal_range`
   - `delta_safety_scale`
+
+## 8. 2026-05-21 更新：最近实现事件
+
+- 训练入口整理：
+  - 新增 `scripts/run_latent_decorr_v2_train.sh`，用 `VARIANT` 选择 `token / block_pooled_mean / block_pooled_topq / block_pooled_hybrid`。
+  - 当前推荐训练命令：`VARIANT=block_pooled_mean ./scripts/run_latent_decorr_v2_train.sh`。
+  - 脚本默认使用 `x8/top20 + time_branch + latent_decorr_weight=0.3 + latent_decorr_top_k=512`。
+- 训练预统计 cache：
+  - `norm_scale_by_block` 现在会先检查 cache，不再每次重复跑 calibration 预统计。
+  - 默认 cache 路径：`train/cache/norm_scale_by_block/<config_fingerprint>.json`。
+  - 可用 `--norm_scale_cache_path` 或脚本环境变量 `NORM_SCALE_CACHE_PATH=...` 指定固定 cache 文件。
+  - `run_manifest.json` 会记录 `norm_scale_cache_path` 和 `norm_scale_cache_fingerprint`。
+- 擦除输出诊断：
+  - 每个 single erase / batch case 保留 `intervention_baseline.png`、`intervention_steered.png`、`intervention_compare.png`、`eval_original/`、`eval_erased/`、`run_manifest.json`。
+  - 时间权重 long/summary 表继续输出，并新增 `effective_gain_mean/max`，用于直接观察 `int_scale * final_time_weight` 是否过大。
+  - 新增 `diag_time_weights_heatmap.png`，展示不同 timestep、不同 feature 的最终时间权重。
+  - 新增 `diag_top_feature_final_activation.png`，展示经过时间系数处理后的 top feature 平均激活。
+- 下一轮建议：
+  - 先跑小批量 `A_no_time / B_stat_time / C_learned_time / D_stat_x_learned_rel`，重点检查是否正常出图。
+  - 重点看 `diag_time_weights_summary.csv` 中的 `effective_gain_mean`、`delta_over_x`、`delta_safety_scale`。
+  - 若 `D_stat_x_learned_rel` 能保持 `B_stat_time` 的正常出图，并让 learned 权重在 timestep 上出现结构，就继续扩大到 `car / dog / nudity`。
+- 已完成的本地验证：
+  - `python -m compileall -q SAE train runtime tests`
+  - `bash -n scripts/run_latent_decorr_v2_train.sh`
+- 未完成验证：
+  - 当前本机环境缺少 `torch`，尚未运行训练 smoke 和单元测试；需在训练环境中执行。

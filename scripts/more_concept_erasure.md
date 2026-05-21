@@ -223,6 +223,12 @@ python -m runtime.shared.batch \
 - `diag_time_weights_heatmap.png`：不同 timestep、不同 feature 的最终权重
 - `diag_top_feature_final_activation.png`：经过时间系数处理后的 top feature 平均激活
 
+如果只想干预某段扩散时间窗，使用统一的 scheduler timestep 参数，例如：
+
+```bash
+--int_timestep_window 1000 800
+```
+
 只想先看每个概念前 4 条：
 
 ```bash
