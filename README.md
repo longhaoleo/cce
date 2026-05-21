@@ -10,12 +10,42 @@
 旧 turbo 路线、旧统一实验入口、旧图像反推式 blacklist 统计已经移除，不再作为默认工作流的一部分。
 顶层的 `SAE/` 目录现在也已经替换成当前项目正在使用的 SharedSAE 模型包，而不是旧单块 SAE 实现。
 
+## 当前默认分支
+
+当前建议优先用 `latent_decorr=0.3` 分支做新概念擦除基准：
+
+```text
+tag:        sae_x8_time_decorr03
+checkpoint: train/output_time_latentdecorr_x8_top20_decorr03/checkpoints/stage3_step_0013772
+sae_root:   sae_data/sae_x8_time_decorr03
+```
+
+前一套可比基线是：
+
+```text
+tag:        sae_x8_time
+checkpoint: train/output_time_latentdecorr_x8_top20_half/checkpoints/stage3_step_0013772
+sae_root:   sae_data/sae_x8_time
+```
+
+最短入口：
+
+```bash
+cd /root/cce
+
+MODE=quick ./scripts/run_current_sae_baseline.sh
+```
+
 ## 模块导航
 
 - [scripts/README.md](scripts/README.md)
   - 当前主线实验命令索引
 - [scripts/erasure_latest_sae.md](scripts/erasure_latest_sae.md)
   - 最新 `no stage1` checkpoint 的定位与擦除命令
+- [scripts/sae_baseline_commands.md](scripts/sae_baseline_commands.md)
+  - 当前 `decorr03` / `decorr01` 两套 SAE 分支的快速基准入口
+- [scripts/more_concept_erasure.md](scripts/more_concept_erasure.md)
+  - 新增概念的定位与擦除命令
 - [train/README.md](train/README.md)
   - 训练、smoke、pilot、full run
 - [runtime/shared/README.md](runtime/shared/README.md)
@@ -39,14 +69,12 @@ cce/
 ├─ runtime/shared/        # Shared 主线运行时实现
 ├─ SDLens/                # Hooked pipeline 基础设施（当前保留）
 ├─ research/archive_experiments/  # 旧实验脚本归档
-├─ feature_frequency/     # 按 SAE 分支分组的基础统计 run 目录
 ├─ train/                 # SharedSAE 训练
 ├─ tools/                 # Shared 辅助工具与脚本源码
 ├─ evaluation/            # Shared batch 擦除量化评测
 ├─ target_concept_dict/   # 概念定义输入
-├─ concept_dict/          # 按 SAE 分支分组的概念定位输出
-├─ concept_dict_freq/     # 按 SAE 分支分组的全局 blacklist 输出
 ├─ batch_test_prompt/     # batch prompt 集合
+├─ sae_data/<sae_tag>/    # SAE 强绑定产物：定位、blacklist、频率统计
 ├─ image_output/          # 图片输出；正式实验按 SAE 分支分组
 └─ log/                   # 实验记录
 ```
@@ -113,6 +141,7 @@ cd /root/cce
 python tools/feature_frequency/run_collect_shared_stats.py \
   --ckpt_dir train/output_exp_c_adapter_align/checkpoints/stage3_step_0027400 \
   --local_files_only \
+  --sae_root sae_data/<sae_tag> \
   --prompts_path data/coco_30k.csv \
   --blocks \
     unet.down_blocks.2.attentions.1 \
@@ -130,7 +159,8 @@ python tools/feature_frequency/run_collect_shared_stats.py \
 cd /root/cce
 
 python tools/feature_frequency/run_build_blacklist.py \
-  --stats_dir feature_frequency/coco30k_stats_v1 \
+  --sae_root sae_data/<sae_tag> \
+  --stats_dir sae_data/<sae_tag>/feature-freq/coco30k_stats_v1 \
   --feature_top_k 200 \
   --blacklist_freq_threshold 0.99 \
   --blacklist_active_ratio_min 0.3 \
@@ -186,8 +216,9 @@ python -m runtime.shared.batch \
 ## 输入输出约定
 
 - 概念定义：`target_concept_dict/<concept>.json`
-- 概念定位输出：`concept_dict/<sae_tag>/<block_short>/<concept>/`
-- 高频特征统计输出：`concept_dict_freq/<sae_tag>/<block_short>/`
+- 概念定位输出：`sae_data/<sae_tag>/concept-dig/<block_short>/<concept>/`
+- 高频特征统计输出：`sae_data/<sae_tag>/feature-freq/<run_name>/<block_short>/`
+- blacklist 输出：`sae_data/<sae_tag>/blacklist/<block_short>/feature_blacklist.txt`
 - 图片输出：`image_output/<sae_tag>/...`
 - 分支命名注册表：`research/sae_branch_registry.md`
 - 诊断 CSV：每个 case 目录内的 `diag_shared_intervention_*.csv`
