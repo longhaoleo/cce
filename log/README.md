@@ -9,6 +9,7 @@
 
 ## 当前索引
 
+- `2026-05-21_latent_decorr_v2_plan.md`：下一步训练正则修改计划；把 latent decorrelation 改成 offdiag-only，并增加可选 block-pooled 模式，用于验证 token-level 全局去相关是否过度打散 `nudity` 这类局部组合概念
 - `2026-05-16_posneg_replace_nudity_not_promising.md`：`top_positive_features` 擦除 + `top_negative_features` 注入的同概念替换实验结果明显崩坏；负特征注入远大于正特征擦除，不再作为主线继续推进
 - `2026-05-16_replace_cloth_range_issue.md`：`nudity -> cloth` 与 `nudity -> ordinary_person` 都说明 replacement 已具备可行性，但当前仍过于全局、容易改写人物结构；现阶段更适合作为扩展能力，主线仍以 erasure 为主
 - `2026-05-15_sae_artifact_layout_unification.md`：统一 SAE 强绑定产物目录到 `sae_data/<sae_tag>/{concept-dig,concept-dig-freq,blacklist,feature-freq}`，并给 `locator / erase / batch / feature_frequency` 增加 `--sae_root`，避免 checkpoint 与 concept root 混用

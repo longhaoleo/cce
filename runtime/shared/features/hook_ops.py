@@ -16,6 +16,8 @@ class InterventionSpec:
     feature_scales: Tuple[float, ...] = ()
     inject_feature_ids: Tuple[int, ...] = ()
     inject_feature_scales: Tuple[float, ...] = ()
+    targetconcept: str = ""
+    injectconcept: str = ""
     mode: str = "ablation"  # ablation | injection | replace | projected_ablation
     scale: float = 1.0
     inject_scale: float = 1.0
@@ -27,8 +29,19 @@ class InterventionSpec:
     # - from_csv: 在 from_x 的基础上再乘一个按 step 的时间权重 w_i(step)
     coeff_source: str = "from_x"  # from_x | from_csv
     coeff_by_step: Dict[int, torch.Tensor] = field(default_factory=dict)  # step_idx -> [k] 时间权重（按 feature_ids 对齐）
+    use_stat_time_weight: bool = False
+    stat_time_weight_scale: float = 1.0
+    use_learned_time_weight: bool = False
+    learned_time_weight_scale: float = 1.0
+    learned_time_weight_temperature: float = 1.0
+    learned_time_weight_transform: str = "neutral_sigmoid"
+    time_fuse_mode: str = "stat_only"
     time_weight_scale: float = 1.0
     inject_coeff_by_step: Dict[int, torch.Tensor] = field(default_factory=dict)
+    inject_use_stat_time_weight: bool = False
+    inject_stat_time_weight_scale: float = 1.0
+    inject_use_learned_time_weight: bool = False
+    inject_learned_time_weight_scale: float = 1.0
     inject_time_weight_scale: float = 1.0
     projection_ridge: float = 1e-4
     step_start: Optional[int] = None
@@ -99,6 +112,58 @@ def _resolve_feature_list(spec: InterventionSpec) -> Tuple[List[int], List[float
         scales = [1.0 for _ in ids]
 
     return ids, scales
+
+
+def _stat_time_weight_for_step(
+    *,
+    coeff_by_step: Dict[int, torch.Tensor],
+    step_idx: int,
+    all_feature_ids: List[int],
+    active_feature_ids: List[int],
+    device,
+    dtype,
+) -> torch.Tensor:
+    """读取当前 step 的统计时间权重，缺失位置严格置 0。"""
+    out = torch.zeros(len(active_feature_ids), device=device, dtype=dtype)
+    coeff_vec_full = coeff_by_step.get(int(step_idx))
+    if coeff_vec_full is None or int(coeff_vec_full.numel()) != len(all_feature_ids):
+        return out
+    coeff_on_device = coeff_vec_full.to(device=device, dtype=dtype)
+    fid_to_pos = {int(fid): idx for idx, fid in enumerate(all_feature_ids)}
+    for out_pos, fid in enumerate(active_feature_ids):
+        if int(fid) in fid_to_pos:
+            out[int(out_pos)] = coeff_on_device[int(fid_to_pos[int(fid)])]
+    return out
+
+
+def _fuse_time_weights(
+    *,
+    stat_weight: torch.Tensor | None,
+    learned_weight: torch.Tensor | None,
+    mode: str,
+    device,
+    dtype,
+    n_features: int,
+) -> torch.Tensor | None:
+    """融合统计时间权重与 learned time weight。"""
+    if stat_weight is None and learned_weight is None:
+        return None
+    if stat_weight is None:
+        stat_weight = torch.ones(int(n_features), device=device, dtype=dtype)
+    if learned_weight is None:
+        learned_weight = torch.ones(int(n_features), device=device, dtype=dtype)
+    mode_norm = str(mode).strip().lower()
+    if mode_norm == "stat_only":
+        return stat_weight
+    if mode_norm == "learned_only":
+        return learned_weight
+    if mode_norm == "product":
+        return stat_weight * learned_weight
+    if mode_norm == "sum":
+        return 0.5 * (stat_weight + learned_weight)
+    if mode_norm == "max":
+        return torch.maximum(stat_weight, learned_weight)
+    raise ValueError(f"未知 time fuse mode: {mode}")
 
 
 def _extract_tensor(output: Any) -> Tuple[torch.Tensor, bool]:
@@ -315,23 +380,45 @@ def build_feature_intervention_hook(
         coeff = z[:, ids]  # [tokens, k]
         dbg["mean_abs_c_base"] = float(coeff.detach().abs().mean().item())
 
-        # 可选：叠加按 step 的时间权重（来自 exp53）
-        src = str(spec.coeff_source).lower()
-        coeff_t = None
-        if src == "from_csv":
-            # 严格模式：只在 CSV 里“出现”的 step/feature 生效，其他全部置 0
-            # 这样可避免“CSV 未覆盖区域”仍然发生干预。
+        # 可选：叠加统计时间权重和 SAE learned time weight。
+        stat_weight = None
+        use_stat_weight = bool(getattr(spec, "use_stat_time_weight", False)) or str(spec.coeff_source).lower() == "from_csv"
+        if use_stat_weight:
             if not spec.coeff_by_step:
                 raise RuntimeError(
-                    f"[intervention] coeff_source=from_csv 但 coeff_by_step 为空。block={spec.block}"
+                    f"[intervention] use_stat_time_weight=True 但 coeff_by_step 为空。block={spec.block}"
                 )
-            coeff_t = torch.zeros(len(ids), device=flat.device, dtype=flat.dtype)  # [k]
-            coeff_vec_full = spec.coeff_by_step.get(int(step_idx))
-            if coeff_vec_full is not None and int(coeff_vec_full.numel()) == len(feature_ids):
-                fid_to_pos = {int(fid): i for i, fid in enumerate(feature_ids)}
-                pos = [fid_to_pos[int(fid)] for fid in ids if int(fid) in fid_to_pos]
-                if pos:
-                    coeff_t = coeff_vec_full.to(device=flat.device, dtype=flat.dtype)[pos]  # [k]
+            stat_weight = _stat_time_weight_for_step(
+                coeff_by_step=spec.coeff_by_step,
+                step_idx=step_idx,
+                all_feature_ids=[int(fid) for fid in feature_ids],
+                active_feature_ids=ids,
+                device=flat.device,
+                dtype=flat.dtype,
+            )
+            stat_weight = stat_weight * float(getattr(spec, "stat_time_weight_scale", spec.time_weight_scale))
+
+        learned_weight = None
+        if bool(getattr(spec, "use_learned_time_weight", False)):
+            timestep_t = torch.tensor([float(max(t_now, 0))], device=flat.device, dtype=flat.dtype)
+            _learned_raw, learned_weight = sae.get_learned_time_weight(
+                timestep=timestep_t,
+                feature_ids=ids,
+                transform=str(getattr(spec, "learned_time_weight_transform", "neutral_sigmoid")),
+                temperature=float(getattr(spec, "learned_time_weight_temperature", 1.0)),
+                scale=float(getattr(spec, "learned_time_weight_scale", 1.0)),
+            )
+            learned_weight = learned_weight.to(device=flat.device, dtype=flat.dtype)
+
+        coeff_t = _fuse_time_weights(
+            stat_weight=stat_weight,
+            learned_weight=learned_weight,
+            mode=str(getattr(spec, "time_fuse_mode", "stat_only")),
+            device=flat.device,
+            dtype=flat.dtype,
+            n_features=len(ids),
+        )
+        if coeff_t is not None:
             coeff = coeff * coeff_t.unsqueeze(0)  # [tokens, k]
         if coeff_t is not None:
             dbg["mean_abs_w_time"] = float(coeff_t.detach().abs().mean().item())

@@ -35,6 +35,7 @@ from .erase import (
     _resolve_feature_bundle,
     _scale_coeff_by_step,
     _save_eval_pair,
+    _save_time_weight_debug_csv,
     build_intervention_cfg_from_args,
     build_shared_feature_intervention_hook,
     resolve_intervention_roots,
@@ -241,7 +242,7 @@ def main() -> None:
                     concept_root=str(concept_root),
                     top_k=int(intervention_cfg.feature_top_k),
                     total_steps=int(steps),
-                    use_time_weight=bool(intervention_cfg.time.use_weight),
+                    use_time_weight=bool(intervention_cfg.time.use_stat_weight),
                     blacklist_root=str(concept_dict_freq_root),
                 )
                 if mode == "replace":
@@ -251,20 +252,20 @@ def main() -> None:
                         concept_root=str(concept_root),
                         top_k=int(intervention_cfg.feature_top_k),
                         total_steps=int(steps),
-                        use_time_weight=bool(intervention_cfg.time.use_weight),
+                        use_time_weight=bool(intervention_cfg.time.use_stat_weight),
                         blacklist_root=str(concept_dict_freq_root),
                     )
             coeffs_by_block = {
                 block: _scale_coeff_by_step(
                     feat.coeff_by_step,
-                    scale=float(intervention_cfg.time.weight_scale) if bool(intervention_cfg.time.use_weight) else 1.0,
+                    scale=float(intervention_cfg.time.stat_weight_scale) if bool(intervention_cfg.time.use_stat_weight) else 1.0,
                 )
                 for block, feat in features_by_block.items()
             }
             inject_coeffs_by_block = {
                 block: _scale_coeff_by_step(
                     feat.coeff_by_step,
-                    scale=float(intervention_cfg.time.weight_scale) if bool(intervention_cfg.time.use_weight) else 1.0,
+                    scale=float(intervention_cfg.time.stat_weight_scale) if bool(intervention_cfg.time.use_stat_weight) else 1.0,
                 )
                 for block, feat in inject_features_by_block.items()
             }
@@ -345,6 +346,7 @@ def main() -> None:
 
                     _save_compare_image(output_dir=prompt_dir, baseline_img=baseline_img, steered_img=steered_img)
                     _save_hook_debug_csv(hooks=hooks, out_dir=str(prompt_dir), tag="shared_intervention")
+                    _save_time_weight_debug_csv(hooks=hooks, out_dir=str(prompt_dir))
                     _save_eval_pair(
                         output_dir=str(prompt_dir),
                         case_number=case_number,
@@ -404,7 +406,10 @@ def main() -> None:
                     "int_scale": float(intervention_cfg.scale),
                     "int_inject_scale": float(intervention_cfg.inject_scale),
                     "int_feature_top_k": int(intervention_cfg.feature_top_k),
-                    "int_use_time_weight": bool(intervention_cfg.time.use_weight),
+                    "int_use_time_weight": bool(intervention_cfg.time.use_stat_weight),
+                    "int_use_stat_time_weight": bool(intervention_cfg.time.use_stat_weight),
+                    "int_use_learned_time_weight": bool(intervention_cfg.time.use_learned_weight),
+                    "int_time_fuse_mode": str(intervention_cfg.time.fuse_mode),
                 }
                 mf.write(json.dumps(rec, ensure_ascii=False) + "\n")
                 mf.flush()

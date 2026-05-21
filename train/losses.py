@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import Dict, Optional
 
 import torch
@@ -95,6 +96,10 @@ def latent_covariance_decorrelation_loss(
     z_by_block: Dict[str, torch.Tensor],
     *,
     top_k: int,
+    mode: str = "token",
+    pool: str = "mean",
+    pool_topq: float = 0.1,
+    eps: float = 1e-4,
 ) -> torch.Tensor:
     """对 batch 内最活跃 latent 做协方差去相关。
 
@@ -108,10 +113,26 @@ def latent_covariance_decorrelation_loss(
     if k <= 0:
         return first.new_tensor(0.0)
 
-    z_items = [z for z in z_by_block.values() if z.numel() > 0]
+    z_items = [z.float() for z in z_by_block.values() if z.numel() > 0]
     if not z_items:
         return first.new_tensor(0.0)
-    z = torch.cat(z_items, dim=0).float()
+    mode_norm = str(mode).strip().lower()
+    pool_norm = str(pool).strip().lower()
+    if mode_norm not in {"token", "block_pooled"}:
+        raise ValueError(f"未知 latent_decorr_mode: {mode}")
+    if pool_norm not in {"mean", "topq", "hybrid"}:
+        raise ValueError(f"未知 latent_decorr_pool: {pool}")
+    q = float(pool_topq)
+    if not (0.0 < q <= 1.0):
+        raise ValueError("latent_decorr_pool_topq 必须在 (0, 1] 内")
+    e = float(eps)
+    if e <= 0.0:
+        raise ValueError("latent_decorr_eps 必须 > 0")
+
+    if mode_norm == "token":
+        z = torch.cat(z_items, dim=0)
+    else:
+        z = torch.cat([_pool_block_latent(z, pool=pool_norm, topq=q) for z in z_items], dim=0)
     if int(z.shape[0]) < 2 or int(z.shape[1]) < 2:
         return z.new_tensor(0.0)
 
@@ -126,14 +147,33 @@ def latent_covariance_decorrelation_loss(
     z_sel = z[:, idx]
     z_sel = z_sel - z_sel.mean(dim=0, keepdim=True)
     std = z_sel.pow(2).mean(dim=0).sqrt()
-    valid = std > 1e-6
+    valid = std > e
     if int(valid.sum().item()) < 2:
         return z.new_tensor(0.0)
 
-    z_norm = z_sel[:, valid] / std[valid].unsqueeze(0)
-    corr = z_norm.t() @ z_norm / float(max(1, int(z_norm.shape[0])))
-    eye = torch.eye(int(corr.shape[0]), device=corr.device, dtype=corr.dtype)
-    return torch.mean((corr - eye).pow(2))
+    z_norm = z_sel[:, valid] / std[valid].clamp_min(e).unsqueeze(0)
+    corr = z_norm.t() @ z_norm / float(max(1, int(z_norm.shape[0]) - 1))
+    corr = corr - torch.diag_embed(torch.diagonal(corr))
+    return torch.mean(corr.pow(2))
+
+
+def _pool_block_latent(z: torch.Tensor, *, pool: str, topq: float) -> torch.Tensor:
+    """把单个 block 的 token latent 池化成 `[1, n_features]`。"""
+    if int(z.shape[0]) <= 0:
+        return z.new_zeros((1, int(z.shape[1])))
+    pool_norm = str(pool).strip().lower()
+    mean = z.mean(dim=0, keepdim=True)
+    if pool_norm == "mean":
+        return mean
+
+    k = max(1, int(math.ceil(float(z.shape[0]) * float(topq))))
+    k = min(k, int(z.shape[0]))
+    topq_mean = torch.topk(z, k=k, dim=0).values.mean(dim=0, keepdim=True)
+    if pool_norm == "topq":
+        return topq_mean
+    if pool_norm == "hybrid":
+        return 0.5 * mean + 0.5 * topq_mean
+    raise ValueError(f"未知 latent_decorr_pool: {pool}")
 
 
 def _pooled_unit(z: torch.Tensor) -> torch.Tensor:
@@ -197,6 +237,10 @@ def group_forward_losses(
     align_weight: float,
     latent_decorr_weight: float = 0.0,
     latent_decorr_top_k: int = 256,
+    latent_decorr_mode: str = "token",
+    latent_decorr_pool: str = "mean",
+    latent_decorr_pool_topq: float = 0.1,
+    latent_decorr_eps: float = 1e-4,
 ) -> LossBreakdown:
     """计算单个 group 的损失。
 
@@ -230,7 +274,14 @@ def group_forward_losses(
     recon = torch.stack(recon_items).mean()
     aux = torch.stack(aux_items).mean() if aux_items else recon.new_tensor(0.0)
     align = align_loss_from_group_latents(z_by_block, mid_block=mid_block, blocks=blocks)
-    latent_decorr = latent_covariance_decorrelation_loss(z_by_block, top_k=int(latent_decorr_top_k))
+    latent_decorr = latent_covariance_decorrelation_loss(
+        z_by_block,
+        top_k=int(latent_decorr_top_k),
+        mode=str(latent_decorr_mode),
+        pool=str(latent_decorr_pool),
+        pool_topq=float(latent_decorr_pool_topq),
+        eps=float(latent_decorr_eps),
+    )
     return compose_total_loss(
         recon=recon,
         auxk=aux,

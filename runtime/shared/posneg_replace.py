@@ -135,6 +135,7 @@ def _resolve_feature_bundle_from_rank_csv(
             )
 
     return FeatureBundle(
+        concept_name=str(concept),
         feature_ids=[int(x) for x in feature_ids],
         feature_scales=[1.0 for _ in feature_ids],
         coeff_by_step=coeff_by_step,
@@ -173,7 +174,7 @@ def main() -> None:
             rank_csv_name=str(args.source_rank_csv),
             top_k=int(cfg.feature_top_k),
             total_steps=int(steps),
-            use_time_weight=bool(cfg.time.use_weight),
+            use_time_weight=bool(cfg.time.use_stat_weight),
             blacklist_root=str(concept_dict_freq_root),
         )
         neg_by_block[str(block)] = _resolve_feature_bundle_from_rank_csv(
@@ -183,16 +184,16 @@ def main() -> None:
             rank_csv_name=str(args.inject_rank_csv),
             top_k=int(cfg.feature_top_k),
             total_steps=int(steps),
-            use_time_weight=bool(cfg.time.use_weight),
+            use_time_weight=bool(cfg.time.use_stat_weight),
             blacklist_root=str(concept_dict_freq_root),
         )
 
     pos_coeffs = {
-        block: _scale_coeff_by_step(feat.coeff_by_step, scale=float(cfg.time.weight_scale) if bool(cfg.time.use_weight) else 1.0)
+        block: _scale_coeff_by_step(feat.coeff_by_step, scale=float(cfg.time.stat_weight_scale) if bool(cfg.time.use_stat_weight) else 1.0)
         for block, feat in pos_by_block.items()
     }
     neg_coeffs = {
-        block: _scale_coeff_by_step(feat.coeff_by_step, scale=float(cfg.time.weight_scale) if bool(cfg.time.use_weight) else 1.0)
+        block: _scale_coeff_by_step(feat.coeff_by_step, scale=float(cfg.time.stat_weight_scale) if bool(cfg.time.use_stat_weight) else 1.0)
         for block, feat in neg_by_block.items()
     }
     pos_scale_map = _build_block_scale_map(blocks=[str(block) for block in blocks], base_scale=float(cfg.scale), coeffs_by_block=pos_coeffs)

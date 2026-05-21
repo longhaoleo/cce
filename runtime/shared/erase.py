@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 import argparse
+import csv
 import json
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -65,8 +66,13 @@ DEFAULT_INTERVENTION_BLOCKS = [
 class TimeInterventionConfig:
     """时间方向上的干预控制。"""
 
-    use_weight: bool = True
-    weight_scale: float = 1.0
+    use_stat_weight: bool = True
+    stat_weight_scale: float = 1.0
+    use_learned_weight: bool = False
+    learned_weight_scale: float = 1.0
+    learned_weight_temperature: float = 1.0
+    learned_weight_transform: str = "neutral_sigmoid"
+    fuse_mode: str = "stat_only"
     t_start: int = 900
     t_end: int = 100
     step_start: Optional[int] = None
@@ -99,6 +105,7 @@ class SharedInterventionConfig:
 class FeatureBundle:
     """单个 block 上待干预的特征集合。"""
 
+    concept_name: str
     feature_ids: List[int]
     feature_scales: List[float]
     coeff_by_step: Dict[int, torch.Tensor]
@@ -106,6 +113,7 @@ class FeatureBundle:
     def to_manifest(self) -> Dict[str, object]:
         """导出 manifest 所需的轻量结构。"""
         return {
+            "concept_name": str(self.concept_name),
             "feature_ids": list(self.feature_ids),
             "feature_scales": list(self.feature_scales),
         }
@@ -216,8 +224,52 @@ def add_intervention_args(
     group.add_argument(
         "--int_use_time_weight",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="是否乘上 feature_time_scores.csv 的 step 权重。",
+        default=None,
+        help="兼容旧参数：是否使用 feature_time_scores.csv 的统计时间权重。",
+    )
+    group.add_argument(
+        "--int_use_stat_time_weight",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="是否使用 feature_time_scores.csv 中的统计量时间权重。",
+    )
+    group.add_argument(
+        "--int_stat_time_weight_scale",
+        type=float,
+        default=1.0,
+        help="统计量时间权重的全局倍率。",
+    )
+    group.add_argument(
+        "--int_use_learned_time_weight",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="是否使用 SAE time_branch 产生的 learned time weight。",
+    )
+    group.add_argument(
+        "--int_learned_time_weight_scale",
+        type=float,
+        default=1.0,
+        help="learned time weight 的全局倍率。",
+    )
+    group.add_argument(
+        "--int_learned_time_weight_temperature",
+        type=float,
+        default=1.0,
+        help="learned time weight 的 sigmoid 温度系数。",
+    )
+    group.add_argument(
+        "--int_learned_time_weight_transform",
+        type=str,
+        default="neutral_sigmoid",
+        choices=["neutral_sigmoid", "relu", "abs", "sigmoid"],
+        help="learned time weight 的正权重转换方式。",
+    )
+    group.add_argument(
+        "--int_time_fuse_mode",
+        type=str,
+        default="stat_only",
+        choices=["stat_only", "learned_only", "product", "sum", "max"],
+        help="统计时间权重与 learned 时间权重的融合方式。",
     )
     group.add_argument(
         "--concept_dict_freq_root",
@@ -253,6 +305,9 @@ def build_intervention_cfg_from_args(args: argparse.Namespace) -> SharedInterven
             inject_scale = float(args.int_scale)
     else:
         inject_scale = float(args.int_inject_scale)
+    stat_arg = getattr(args, "int_use_stat_time_weight", None)
+    compat_arg = getattr(args, "int_use_time_weight", None)
+    use_stat_time_weight = bool(stat_arg if stat_arg is not None else (compat_arg if compat_arg is not None else True))
     return SharedInterventionConfig(
         mode=str(args.int_mode),
         scale=float(args.int_scale),
@@ -262,8 +317,13 @@ def build_intervention_cfg_from_args(args: argparse.Namespace) -> SharedInterven
         use_out_adapter_for_decode=bool(args.use_out_adapter_for_decode),
         apply_only_conditional=True,
         time=TimeInterventionConfig(
-            use_weight=bool(args.int_use_time_weight),
-            weight_scale=1.0,
+            use_stat_weight=bool(use_stat_time_weight),
+            stat_weight_scale=float(getattr(args, "int_stat_time_weight_scale", 1.0)),
+            use_learned_weight=bool(getattr(args, "int_use_learned_time_weight", False)),
+            learned_weight_scale=float(getattr(args, "int_learned_time_weight_scale", 1.0)),
+            learned_weight_temperature=float(getattr(args, "int_learned_time_weight_temperature", 1.0)),
+            learned_weight_transform=str(getattr(args, "int_learned_time_weight_transform", "neutral_sigmoid")),
+            fuse_mode=str(getattr(args, "int_time_fuse_mode", "stat_only")),
             t_start=int(args.int_t_start),
             t_end=int(args.int_t_end),
             step_start=_step_or_none(int(args.int_step_start)),
@@ -393,6 +453,7 @@ def _resolve_feature_bundle(
         coeff_by_step = _interpolate_coeff_by_step(coeff_by_step=coeff_raw, total_steps=int(total_steps))
 
     return FeatureBundle(
+        concept_name=str(targetconcept),
         feature_ids=[int(x) for x in feature_ids],
         feature_scales=[1.0 for _ in feature_ids],
         coeff_by_step=coeff_by_step,
@@ -409,6 +470,151 @@ def _scale_coeff_by_step(
     if not coeff_by_step or abs(s - 1.0) <= 1e-12:
         return coeff_by_step
     return {int(step): vec * s for step, vec in coeff_by_step.items()}
+
+
+def _stat_time_weight_for_step(
+    *,
+    coeff_by_step: Dict[int, torch.Tensor],
+    step_idx: int,
+    all_feature_ids: List[int],
+    active_feature_ids: List[int],
+    device,
+    dtype,
+) -> torch.Tensor:
+    """读取当前 step 的统计时间权重，缺失位置严格置 0。"""
+    out = torch.zeros(len(active_feature_ids), device=device, dtype=dtype)
+    coeff_vec_full = coeff_by_step.get(int(step_idx))
+    if coeff_vec_full is None or int(coeff_vec_full.numel()) != len(all_feature_ids):
+        return out
+    fid_to_pos = {int(fid): idx for idx, fid in enumerate(all_feature_ids)}
+    coeff_on_device = coeff_vec_full.to(device=device, dtype=dtype)
+    for out_pos, fid in enumerate(active_feature_ids):
+        if int(fid) in fid_to_pos:
+            out[int(out_pos)] = coeff_on_device[int(fid_to_pos[int(fid)])]
+    return out
+
+
+def _fuse_time_weights(
+    *,
+    stat_weight: torch.Tensor | None,
+    learned_weight: torch.Tensor | None,
+    mode: str,
+    device,
+    dtype,
+    n_features: int,
+) -> torch.Tensor | None:
+    """融合统计时间权重与 learned time weight。"""
+    if stat_weight is None and learned_weight is None:
+        return None
+    if stat_weight is None:
+        stat_weight = torch.ones(int(n_features), device=device, dtype=dtype)
+    if learned_weight is None:
+        learned_weight = torch.ones(int(n_features), device=device, dtype=dtype)
+    mode_norm = str(mode).strip().lower()
+    if mode_norm == "stat_only":
+        return stat_weight
+    if mode_norm == "learned_only":
+        return learned_weight
+    if mode_norm == "product":
+        return stat_weight * learned_weight
+    if mode_norm == "sum":
+        return 0.5 * (stat_weight + learned_weight)
+    if mode_norm == "max":
+        return torch.maximum(stat_weight, learned_weight)
+    raise ValueError(f"未知 time fuse mode: {mode}")
+
+
+def _tensor_or_blank(values: torch.Tensor | None, idx: int) -> str | float:
+    """CSV 诊断里把可选 tensor 值转成数字或空字符串。"""
+    if values is None or int(idx) >= int(values.numel()):
+        return ""
+    return float(values.detach().float().cpu()[int(idx)].item())
+
+
+def _record_time_weight_rows(
+    *,
+    hook,
+    concept: str,
+    role: str,
+    block: str,
+    step_idx: int,
+    timestep: int,
+    feature_ids: List[int],
+    stat_weight: torch.Tensor | None,
+    learned_raw: torch.Tensor | None,
+    learned_weight: torch.Tensor | None,
+    final_time_weight: torch.Tensor | None,
+    coeff_base: torch.Tensor,
+    coeff_final: torch.Tensor,
+    debug_row: Dict[str, object],
+) -> None:
+    """记录 long/summary 两种时间权重诊断行。"""
+    long_rows = getattr(hook, "time_weight_long_rows", None)
+    summary_rows = getattr(hook, "time_weight_summary_rows", None)
+    if long_rows is None or summary_rows is None:
+        return
+
+    base_abs = coeff_base.detach().abs().mean(dim=0)
+    final_abs = coeff_final.detach().abs().mean(dim=0)
+    for pos, fid in enumerate(feature_ids):
+        long_rows.append(
+            {
+                "concept": str(concept),
+                "role": str(role),
+                "block": str(block),
+                "step_idx": int(step_idx),
+                "timestep": int(timestep),
+                "feature_id": int(fid),
+                "stat_weight": _tensor_or_blank(stat_weight, pos),
+                "learned_time_raw": _tensor_or_blank(learned_raw, pos),
+                "learned_weight": _tensor_or_blank(learned_weight, pos),
+                "final_time_weight": _tensor_or_blank(final_time_weight, pos),
+                "base_coeff_mean_abs": float(base_abs[pos].item()),
+                "final_coeff_mean_abs": float(final_abs[pos].item()),
+            }
+        )
+
+    def _mean_or_blank(x: torch.Tensor | None) -> str | float:
+        if x is None or int(x.numel()) == 0:
+            return ""
+        return float(x.detach().abs().float().mean().item())
+
+    def _max_or_blank(x: torch.Tensor | None) -> str | float:
+        if x is None or int(x.numel()) == 0:
+            return ""
+        return float(x.detach().abs().float().max().item())
+
+    if int(final_abs.numel()) > 0:
+        top_k = min(5, int(final_abs.numel()))
+        top_vals, top_pos = torch.topk(final_abs, k=top_k)
+        top_ids = " ".join(str(int(feature_ids[int(pos.item())])) for pos in top_pos)
+        top_weights = " ".join(f"{float(val.item()):.6g}" for val in top_vals)
+    else:
+        top_ids = ""
+        top_weights = ""
+
+    summary_rows.append(
+        {
+            "concept": str(concept),
+            "role": str(role),
+            "block": str(block),
+            "step_idx": int(step_idx),
+            "timestep": int(timestep),
+            "num_features": int(len(feature_ids)),
+            "stat_weight_mean": _mean_or_blank(stat_weight),
+            "stat_weight_max": _max_or_blank(stat_weight),
+            "learned_weight_mean": _mean_or_blank(learned_weight),
+            "learned_weight_max": _max_or_blank(learned_weight),
+            "final_weight_mean": _mean_or_blank(final_time_weight),
+            "final_weight_max": _max_or_blank(final_time_weight),
+            "mean_abs_c_base": float(coeff_base.detach().abs().mean().item()),
+            "mean_abs_c_final": float(coeff_final.detach().abs().mean().item()),
+            "mean_abs_delta_x": float(debug_row.get("mean_abs_delta_x", 0.0) or 0.0),
+            "delta_over_x": float(debug_row.get("delta_over_x", 0.0) or 0.0),
+            "top_feature_ids_final": top_ids,
+            "top_feature_weights_final": top_weights,
+        }
+    )
 
 
 @torch.no_grad()
@@ -591,18 +797,42 @@ def build_shared_feature_intervention_hook(
         id_to_scale = {int(fid): float(scale) for fid, scale in zip(feature_ids_raw, feature_scales_raw)}
         scales_t = torch.tensor([id_to_scale[int(fid)] for fid in ids], device=params.device, dtype=params.dtype)
 
-        coeff_t = None
-        if str(spec.coeff_source).lower() == "from_csv":
+        stat_weight = None
+        use_stat_weight = bool(getattr(spec, "use_stat_time_weight", False)) or str(spec.coeff_source).lower() == "from_csv"
+        if use_stat_weight:
             if not spec.coeff_by_step:
-                raise RuntimeError(f"[{LOG_PREFIX}] coeff_source=from_csv 但 coeff_by_step 为空。block={block_name}")
-            coeff_t = torch.zeros(len(ids), device=params.device, dtype=params.dtype)
-            coeff_vec_full = spec.coeff_by_step.get(int(step_idx))
-            if coeff_vec_full is not None and int(coeff_vec_full.numel()) == len(feature_ids_raw):
-                fid_to_pos = {int(fid): idx for idx, fid in enumerate(feature_ids_raw)}
-                pos = [fid_to_pos[int(fid)] for fid in ids if int(fid) in fid_to_pos]
-                if pos:
-                    coeff_t = coeff_vec_full.to(device=params.device, dtype=params.dtype)[pos]
-            coeff_t = coeff_t * float(spec.time_weight_scale)
+                raise RuntimeError(f"[{LOG_PREFIX}] use_stat_time_weight=True 但 coeff_by_step 为空。block={block_name}")
+            stat_weight = _stat_time_weight_for_step(
+                coeff_by_step=spec.coeff_by_step,
+                step_idx=step_idx,
+                all_feature_ids=[int(fid) for fid in feature_ids_raw],
+                active_feature_ids=ids,
+                device=params.device,
+                dtype=params.dtype,
+            )
+            stat_weight = stat_weight * float(getattr(spec, "stat_time_weight_scale", spec.time_weight_scale))
+
+        learned_raw = None
+        learned_weight = None
+        if bool(getattr(spec, "use_learned_time_weight", False)):
+            learned_raw, learned_weight = sae.get_learned_time_weight(
+                timestep=timestep_t,
+                feature_ids=ids,
+                transform=str(getattr(spec, "learned_time_weight_transform", "neutral_sigmoid")),
+                temperature=float(getattr(spec, "learned_time_weight_temperature", 1.0)),
+                scale=float(getattr(spec, "learned_time_weight_scale", 1.0)),
+            )
+            learned_raw = learned_raw.to(device=params.device, dtype=params.dtype)
+            learned_weight = learned_weight.to(device=params.device, dtype=params.dtype)
+
+        coeff_t = _fuse_time_weights(
+            stat_weight=stat_weight,
+            learned_weight=learned_weight,
+            mode=str(getattr(spec, "time_fuse_mode", "stat_only")),
+            device=params.device,
+            dtype=params.dtype,
+            n_features=len(ids),
+        )
 
         recon_norm, coeff_base, coeff_final = _decode_selected_features_norm(
             model=sae,
@@ -662,6 +892,22 @@ def build_shared_feature_intervention_hook(
         mean_abs_x = float(flat_out.detach().abs().mean().item())
         dbg["mean_abs_delta_x"] = mean_abs_delta
         dbg["delta_over_x"] = float(mean_abs_delta / (mean_abs_x + 1e-12))
+        _record_time_weight_rows(
+            hook=hook,
+            concept=str(getattr(spec, "targetconcept", "") or ""),
+            role="target",
+            block=str(block_name),
+            step_idx=int(step_idx),
+            timestep=int(t_now),
+            feature_ids=ids,
+            stat_weight=stat_weight,
+            learned_raw=learned_raw,
+            learned_weight=learned_weight,
+            final_time_weight=coeff_t,
+            coeff_base=coeff_base,
+            coeff_final=coeff_final,
+            debug_row=dbg,
+        )
 
         if mode == "replace":
             n_feat_inject = int(sae.decoder.weight.shape[1])
@@ -678,21 +924,49 @@ def build_shared_feature_intervention_hook(
                 dtype=params.dtype,
             )
 
-            inject_coeff_t = None
-            if str(spec.coeff_source).lower() == "from_csv":
+            inject_stat_weight = None
+            use_inject_stat_weight = bool(getattr(spec, "inject_use_stat_time_weight", False)) or (
+                str(spec.coeff_source).lower() == "from_csv"
+            )
+            if use_inject_stat_weight:
                 if not spec.inject_coeff_by_step:
                     raise RuntimeError(
-                        f"[{LOG_PREFIX}] int_mode=replace 且 coeff_source=from_csv，但 inject_coeff_by_step 为空。"
+                        f"[{LOG_PREFIX}] int_mode=replace 且 use_stat_time_weight=True，但 inject_coeff_by_step 为空。"
                         f" block={block_name}"
                     )
-                inject_coeff_t = torch.zeros(len(inject_ids), device=params.device, dtype=params.dtype)
-                inject_coeff_vec_full = spec.inject_coeff_by_step.get(int(step_idx))
-                if inject_coeff_vec_full is not None and int(inject_coeff_vec_full.numel()) == len(inject_feature_ids_raw):
-                    inject_fid_to_pos = {int(fid): idx for idx, fid in enumerate(inject_feature_ids_raw)}
-                    inject_pos = [inject_fid_to_pos[int(fid)] for fid in inject_ids if int(fid) in inject_fid_to_pos]
-                    if inject_pos:
-                        inject_coeff_t = inject_coeff_vec_full.to(device=params.device, dtype=params.dtype)[inject_pos]
-                inject_coeff_t = inject_coeff_t * float(spec.inject_time_weight_scale)
+                inject_stat_weight = _stat_time_weight_for_step(
+                    coeff_by_step=spec.inject_coeff_by_step,
+                    step_idx=step_idx,
+                    all_feature_ids=[int(fid) for fid in inject_feature_ids_raw],
+                    active_feature_ids=inject_ids,
+                    device=params.device,
+                    dtype=params.dtype,
+                )
+                inject_stat_weight = inject_stat_weight * float(
+                    getattr(spec, "inject_stat_time_weight_scale", spec.inject_time_weight_scale)
+                )
+
+            inject_learned_raw = None
+            inject_learned_weight = None
+            if bool(getattr(spec, "inject_use_learned_time_weight", getattr(spec, "use_learned_time_weight", False))):
+                inject_learned_raw, inject_learned_weight = sae.get_learned_time_weight(
+                    timestep=timestep_t,
+                    feature_ids=inject_ids,
+                    transform=str(getattr(spec, "learned_time_weight_transform", "neutral_sigmoid")),
+                    temperature=float(getattr(spec, "learned_time_weight_temperature", 1.0)),
+                    scale=float(getattr(spec, "inject_learned_time_weight_scale", spec.learned_time_weight_scale)),
+                )
+                inject_learned_raw = inject_learned_raw.to(device=params.device, dtype=params.dtype)
+                inject_learned_weight = inject_learned_weight.to(device=params.device, dtype=params.dtype)
+
+            inject_coeff_t = _fuse_time_weights(
+                stat_weight=inject_stat_weight,
+                learned_weight=inject_learned_weight,
+                mode=str(getattr(spec, "time_fuse_mode", "stat_only")),
+                device=params.device,
+                dtype=params.dtype,
+                n_features=len(inject_ids),
+            )
 
             inject_recon_norm, _inject_coeff_base, inject_coeff_final = _decode_selected_features_norm(
                 model=sae,
@@ -729,6 +1003,26 @@ def build_shared_feature_intervention_hook(
                 dbg["inject_top_feature_scores_final"] = " ".join(
                     f"{float(val.item()):.6g}" for val in inject_top_vals
                 )
+            _record_time_weight_rows(
+                hook=hook,
+                concept=str(getattr(spec, "injectconcept", "") or ""),
+                role="inject",
+                block=str(block_name),
+                step_idx=int(step_idx),
+                timestep=int(t_now),
+                feature_ids=inject_ids,
+                stat_weight=inject_stat_weight,
+                learned_raw=inject_learned_raw,
+                learned_weight=inject_learned_weight,
+                final_time_weight=inject_coeff_t,
+                coeff_base=_inject_coeff_base,
+                coeff_final=inject_coeff_final,
+                debug_row={
+                    **dbg,
+                    "mean_abs_delta_x": dbg.get("mean_abs_delta_x_inject", 0.0),
+                    "delta_over_x": 0.0,
+                },
+            )
 
         dbg["active"] = 1
         state["debug_rows"].append(dbg)
@@ -738,6 +1032,8 @@ def build_shared_feature_intervention_hook(
         return _pack_tensor(out, is_tuple)
 
     hook.debug_rows = state["debug_rows"]  # type: ignore[attr-defined]
+    hook.time_weight_long_rows = []  # type: ignore[attr-defined]
+    hook.time_weight_summary_rows = []  # type: ignore[attr-defined]
     return hook
 
 
@@ -758,6 +1054,8 @@ def _build_intervention_spec(
         feature_scales=tuple(features.feature_scales),
         inject_feature_ids=tuple(() if inject_features is None else inject_features.feature_ids),
         inject_feature_scales=tuple(() if inject_features is None else inject_features.feature_scales),
+        targetconcept=str(features.concept_name),
+        injectconcept=str("" if inject_features is None else inject_features.concept_name),
         mode=str(cfg.mode),
         scale=float(block_scale_map[block]),
         inject_scale=float(cfg.inject_scale if inject_block_scale_map is None else inject_block_scale_map[block]),
@@ -765,11 +1063,22 @@ def _build_intervention_spec(
         t_start=int(cfg.time.t_start),
         t_end=int(cfg.time.t_end),
         use_spatial_norm_weight=bool(cfg.spatial.use_norm_weight),
-        coeff_source="from_csv" if bool(cfg.time.use_weight) else "from_x",
+        coeff_source="from_csv" if bool(cfg.time.use_stat_weight) else "from_x",
         coeff_by_step=features.coeff_by_step,
         inject_coeff_by_step={} if inject_features is None else inject_features.coeff_by_step,
-        time_weight_scale=float(cfg.time.weight_scale),
-        inject_time_weight_scale=float(cfg.time.weight_scale),
+        use_stat_time_weight=bool(cfg.time.use_stat_weight),
+        stat_time_weight_scale=float(cfg.time.stat_weight_scale),
+        use_learned_time_weight=bool(cfg.time.use_learned_weight),
+        learned_time_weight_scale=float(cfg.time.learned_weight_scale),
+        learned_time_weight_temperature=float(cfg.time.learned_weight_temperature),
+        learned_time_weight_transform=str(cfg.time.learned_weight_transform),
+        time_fuse_mode=str(cfg.time.fuse_mode),
+        time_weight_scale=float(cfg.time.stat_weight_scale),
+        inject_use_stat_time_weight=bool(cfg.time.use_stat_weight),
+        inject_stat_time_weight_scale=float(cfg.time.stat_weight_scale),
+        inject_use_learned_time_weight=bool(cfg.time.use_learned_weight),
+        inject_learned_time_weight_scale=float(cfg.time.learned_weight_scale),
+        inject_time_weight_scale=float(cfg.time.stat_weight_scale),
         step_start=cfg.time.step_start,
         step_end=cfg.time.step_end if cfg.time.step_end is not None else max(0, int(total_steps) - 1),
         apply_only_conditional=bool(cfg.apply_only_conditional),
@@ -794,6 +1103,66 @@ def _save_eval_pair(
         baseline_img.save(original_dir / stem)
     if steered_img is not None:
         steered_img.save(erased_dir / stem)
+
+
+def _save_time_weight_debug_csv(*, hooks: Dict[str, object], out_dir: str) -> None:
+    """导出所有 block 汇总后的时间权重诊断 CSV。"""
+    ensure_dir(out_dir)
+    long_rows: List[Dict[str, object]] = []
+    summary_rows: List[Dict[str, object]] = []
+    for hk in hooks.values():
+        long_rows.extend(getattr(hk, "time_weight_long_rows", []) or [])
+        summary_rows.extend(getattr(hk, "time_weight_summary_rows", []) or [])
+
+    if long_rows:
+        long_path = Path(out_dir).expanduser().resolve() / "diag_time_weights_long.csv"
+        fields = [
+            "concept",
+            "role",
+            "block",
+            "step_idx",
+            "timestep",
+            "feature_id",
+            "stat_weight",
+            "learned_time_raw",
+            "learned_weight",
+            "final_time_weight",
+            "base_coeff_mean_abs",
+            "final_coeff_mean_abs",
+        ]
+        with long_path.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fields)
+            writer.writeheader()
+            for row in long_rows:
+                writer.writerow({key: row.get(key, "") for key in fields})
+
+    if summary_rows:
+        summary_path = Path(out_dir).expanduser().resolve() / "diag_time_weights_summary.csv"
+        fields = [
+            "concept",
+            "role",
+            "block",
+            "step_idx",
+            "timestep",
+            "num_features",
+            "stat_weight_mean",
+            "stat_weight_max",
+            "learned_weight_mean",
+            "learned_weight_max",
+            "final_weight_mean",
+            "final_weight_max",
+            "mean_abs_c_base",
+            "mean_abs_c_final",
+            "mean_abs_delta_x",
+            "delta_over_x",
+            "top_feature_ids_final",
+            "top_feature_weights_final",
+        ]
+        with summary_path.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fields)
+            writer.writeheader()
+            for row in summary_rows:
+                writer.writerow({key: row.get(key, "") for key in fields})
 
 
 def main() -> None:
@@ -841,7 +1210,7 @@ def main() -> None:
             concept_root=str(concept_root),
             top_k=int(intervention_cfg.feature_top_k),
             total_steps=int(steps),
-            use_time_weight=bool(intervention_cfg.time.use_weight),
+            use_time_weight=bool(intervention_cfg.time.use_stat_weight),
             blacklist_root=str(concept_dict_freq_root),
         )
         if mode == "replace":
@@ -851,20 +1220,20 @@ def main() -> None:
                 concept_root=str(concept_root),
                 top_k=int(intervention_cfg.feature_top_k),
                 total_steps=int(steps),
-                use_time_weight=bool(intervention_cfg.time.use_weight),
+                use_time_weight=bool(intervention_cfg.time.use_stat_weight),
                 blacklist_root=str(concept_dict_freq_root),
             )
     coeffs_by_block = {
         block: _scale_coeff_by_step(
             features.coeff_by_step,
-            scale=float(intervention_cfg.time.weight_scale) if bool(intervention_cfg.time.use_weight) else 1.0,
+            scale=float(intervention_cfg.time.stat_weight_scale) if bool(intervention_cfg.time.use_stat_weight) else 1.0,
         )
         for block, features in features_by_block.items()
     }
     inject_coeffs_by_block = {
         block: _scale_coeff_by_step(
             features.coeff_by_step,
-            scale=float(intervention_cfg.time.weight_scale) if bool(intervention_cfg.time.use_weight) else 1.0,
+            scale=float(intervention_cfg.time.stat_weight_scale) if bool(intervention_cfg.time.use_stat_weight) else 1.0,
         )
         for block, features in inject_features_by_block.items()
     }
@@ -946,6 +1315,7 @@ def main() -> None:
         print(f"[{LOG_PREFIX}] 已保存 compare: {compare_path}")
 
     _save_hook_debug_csv(hooks=hooks, out_dir=str(args.output_dir), tag="shared_intervention")
+    _save_time_weight_debug_csv(hooks=hooks, out_dir=str(args.output_dir))
     _save_eval_pair(
         output_dir=str(args.output_dir),
         case_number=int(args.case_number),

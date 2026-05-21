@@ -323,6 +323,10 @@ class SharedSAETrainer:
                 align_weight=float(align_weight),
                 latent_decorr_weight=float(self.cfg.latent_decorr_weight),
                 latent_decorr_top_k=int(self.cfg.latent_decorr_top_k),
+                latent_decorr_mode=str(self.cfg.latent_decorr_mode),
+                latent_decorr_pool=str(self.cfg.latent_decorr_pool),
+                latent_decorr_pool_topq=float(self.cfg.latent_decorr_pool_topq),
+                latent_decorr_eps=float(self.cfg.latent_decorr_eps),
             )
             group_losses.append(loss)
 

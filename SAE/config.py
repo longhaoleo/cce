@@ -118,6 +118,10 @@ class TrainConfig:
     align_warmup_ratio: float = 0.1
     latent_decorr_weight: float = 0.0
     latent_decorr_top_k: int = 256
+    latent_decorr_mode: str = "token"
+    latent_decorr_pool: str = "mean"
+    latent_decorr_pool_topq: float = 0.1
+    latent_decorr_eps: float = 1e-4
 
     epochs_stage2: float = 1.0
     epochs_stage3: float = 0.1
@@ -206,6 +210,14 @@ class TrainConfig:
             raise ValueError("time_branch_warmup_ratio 不能为负数")
         if int(self.latent_decorr_top_k) < 0:
             raise ValueError("latent_decorr_top_k 不能为负数；0 表示关闭 latent decorrelation")
+        if str(self.latent_decorr_mode) not in {"token", "block_pooled"}:
+            raise ValueError(f"latent_decorr_mode 非法: {self.latent_decorr_mode}")
+        if str(self.latent_decorr_pool) not in {"mean", "topq", "hybrid"}:
+            raise ValueError(f"latent_decorr_pool 非法: {self.latent_decorr_pool}")
+        if not (0.0 < float(self.latent_decorr_pool_topq) <= 1.0):
+            raise ValueError("latent_decorr_pool_topq 必须在 (0, 1] 内")
+        if float(self.latent_decorr_eps) <= 0.0:
+            raise ValueError("latent_decorr_eps 必须 > 0")
 
     def to_dict(self) -> Dict:
         """将配置转换为可序列化字典。

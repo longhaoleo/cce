@@ -438,6 +438,57 @@ class SharedSAE(nn.Module):
             return (1.0 + gamma_p) * ((1.0 + gamma_t) * base + beta_t) + beta_p
         raise RuntimeError("时间/空间分支组合状态非法")
 
+    @torch.no_grad()
+    def get_learned_time_weight(
+        self,
+        timestep: torch.Tensor,
+        feature_ids: list[int],
+        *,
+        transform: str = "neutral_sigmoid",
+        temperature: float = 1.0,
+        scale: float = 1.0,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """返回当前 timestep 下，每个目标 feature 的 learned time weight。"""
+        device = self.latent_bias.device
+        dtype = self.latent_bias.dtype
+        ids = torch.tensor([int(fid) for fid in feature_ids], device=device, dtype=torch.long)
+        if int(ids.numel()) == 0:
+            empty = torch.zeros(0, device=device, dtype=dtype)
+            return empty, empty
+
+        timestep_t = timestep.to(device=device, dtype=dtype).reshape(-1)
+        if int(timestep_t.numel()) == 0:
+            timestep_t = torch.tensor([0.0], device=device, dtype=dtype)
+
+        if not bool(self.use_time_branch):
+            raw = torch.zeros(int(ids.numel()), device=device, dtype=dtype)
+            return raw, torch.ones_like(raw) * float(scale)
+
+        b_t, gamma_t, beta_t = self.time_branch(timestep=timestep_t, n_tokens=1)
+        if b_t is not None:
+            raw_full = b_t[0]
+        elif beta_t is not None:
+            raw_full = beta_t[0]
+        elif gamma_t is not None:
+            raw_full = gamma_t[0]
+        else:
+            raw_full = torch.zeros_like(self.latent_bias)
+        raw = raw_full.index_select(0, ids)
+
+        transform_norm = str(transform).strip().lower()
+        temp = float(temperature)
+        if transform_norm == "neutral_sigmoid":
+            weight = 2.0 * torch.sigmoid(temp * raw)
+        elif transform_norm == "relu":
+            weight = torch.relu(raw)
+        elif transform_norm == "abs":
+            weight = raw.abs()
+        elif transform_norm == "sigmoid":
+            weight = torch.sigmoid(temp * raw)
+        else:
+            raise ValueError(f"未知 learned time transform: {transform}")
+        return raw, weight * float(scale)
+
     def _update_dead_stats(self, z: torch.Tensor) -> None:
         """更新 dead-feature 统计。
 

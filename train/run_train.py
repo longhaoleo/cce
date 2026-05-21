@@ -362,6 +362,32 @@ def parse_args() -> argparse.Namespace:
         help="latent 去相关只作用于 batch 内 top-active feature；0 表示关闭。",
     )
     g_opt.add_argument(
+        "--latent_decorr_mode",
+        type=str,
+        default="token",
+        choices=["token", "block_pooled"],
+        help="latent 去相关的样本组织方式。",
+    )
+    g_opt.add_argument(
+        "--latent_decorr_pool",
+        type=str,
+        default="mean",
+        choices=["mean", "topq", "hybrid"],
+        help="block_pooled 模式下的 token pooling 方式。",
+    )
+    g_opt.add_argument(
+        "--latent_decorr_pool_topq",
+        type=float,
+        default=0.1,
+        help="topq/hybrid pooling 使用的 token top fraction。",
+    )
+    g_opt.add_argument(
+        "--latent_decorr_eps",
+        type=float,
+        default=1e-4,
+        help="latent 去相关标准化的数值稳定项。",
+    )
+    g_opt.add_argument(
         "--tokens_per_step_target",
         type=int,
         default=4096,
@@ -425,6 +451,10 @@ def build_config(args: argparse.Namespace) -> TrainConfig:
         align_warmup_ratio=float(args.align_warmup_ratio),
         latent_decorr_weight=float(args.latent_decorr_weight),
         latent_decorr_top_k=int(args.latent_decorr_top_k),
+        latent_decorr_mode=str(args.latent_decorr_mode),
+        latent_decorr_pool=str(args.latent_decorr_pool),
+        latent_decorr_pool_topq=float(args.latent_decorr_pool_topq),
+        latent_decorr_eps=float(args.latent_decorr_eps),
         tokens_per_step_target=int(args.tokens_per_step_target),
         group_bs=int(args.group_bs),
         block_in_rank=int(args.block_in_rank),
