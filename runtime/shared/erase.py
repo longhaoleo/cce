@@ -1164,6 +1164,132 @@ def _save_time_weight_debug_csv(*, hooks: Dict[str, object], out_dir: str) -> No
             for row in summary_rows:
                 writer.writerow({key: row.get(key, "") for key in fields})
 
+    _save_time_weight_plots(long_rows=long_rows, summary_rows=summary_rows, out_dir=out_dir)
+
+
+def _float_or_none(value: object) -> float | None:
+    """把 CSV/诊断单元格安全转成 float。"""
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def _save_time_weight_plots(
+    *,
+    long_rows: List[Dict[str, object]],
+    summary_rows: List[Dict[str, object]],
+    out_dir: str,
+) -> None:
+    """保存 feature x timestep 时间权重热图和 top feature 处理后激活图。"""
+    if not long_rows:
+        return
+    try:
+        import matplotlib.pyplot as plt
+        import numpy as np
+    except Exception as exc:
+        print(f"[{LOG_PREFIX}] 跳过时间权重绘图: {exc}")
+        return
+
+    out_root = Path(out_dir).expanduser().resolve()
+    plot_groups: Dict[Tuple[str, str, str], List[Dict[str, object]]] = {}
+    for row in long_rows:
+        key = (str(row.get("concept", "")), str(row.get("role", "")), str(row.get("block", "")))
+        plot_groups.setdefault(key, []).append(row)
+
+    heatmap_panels = []
+    for (concept, role, block), rows in sorted(plot_groups.items()):
+        feature_ids = sorted({int(row["feature_id"]) for row in rows if str(row.get("feature_id", "")).strip()})
+        step_ids = sorted({int(row["step_idx"]) for row in rows if str(row.get("step_idx", "")).strip()})
+        if not feature_ids or not step_ids:
+            continue
+        feat_to_i = {fid: i for i, fid in enumerate(feature_ids)}
+        step_to_j = {step: j for j, step in enumerate(step_ids)}
+        arr = np.full((len(feature_ids), len(step_ids)), np.nan, dtype=np.float32)
+        for row in rows:
+            weight = _float_or_none(row.get("final_time_weight"))
+            if weight is None:
+                continue
+            arr[feat_to_i[int(row["feature_id"])], step_to_j[int(row["step_idx"])]] = float(weight)
+        if np.all(np.isnan(arr)):
+            continue
+        heatmap_panels.append((concept, role, block, feature_ids, step_ids, arr))
+
+    if heatmap_panels:
+        n_panels = len(heatmap_panels)
+        fig_h = max(3.0, 2.8 * n_panels)
+        fig, axes = plt.subplots(n_panels, 1, figsize=(11, fig_h), squeeze=False)
+        for ax, (concept, role, block, feature_ids, step_ids, arr) in zip(axes[:, 0], heatmap_panels):
+            im = ax.imshow(arr, aspect="auto", interpolation="nearest", cmap="viridis")
+            ax.set_title(f"{concept} / {role} / {block}")
+            ax.set_xlabel("step_idx")
+            ax.set_ylabel("feature_id")
+            x_ticks = list(range(len(step_ids)))
+            if len(x_ticks) > 12:
+                stride = max(1, len(x_ticks) // 12)
+                x_ticks = x_ticks[::stride]
+            ax.set_xticks(x_ticks)
+            ax.set_xticklabels([str(step_ids[i]) for i in x_ticks], rotation=45, ha="right")
+            y_ticks = list(range(len(feature_ids)))
+            if len(y_ticks) > 16:
+                stride = max(1, len(y_ticks) // 16)
+                y_ticks = y_ticks[::stride]
+            ax.set_yticks(y_ticks)
+            ax.set_yticklabels([str(feature_ids[i]) for i in y_ticks])
+            fig.colorbar(im, ax=ax, fraction=0.02, pad=0.01, label="final_time_weight")
+        fig.tight_layout()
+        path = out_root / "diag_time_weights_heatmap.png"
+        fig.savefig(path, dpi=160)
+        plt.close(fig)
+
+    # 画“经过时间系数处理后的平均激活权重”：final_coeff_mean_abs。
+    top_rows_by_group: Dict[Tuple[str, str, str], Dict[int, float]] = {}
+    for row in long_rows:
+        key = (str(row.get("concept", "")), str(row.get("role", "")), str(row.get("block", "")))
+        fid = int(row["feature_id"])
+        val = _float_or_none(row.get("final_coeff_mean_abs"))
+        if val is None:
+            continue
+        top_rows_by_group.setdefault(key, {})[fid] = max(float(val), top_rows_by_group.get(key, {}).get(fid, 0.0))
+
+    activation_panels = []
+    for key, fid_to_peak in sorted(top_rows_by_group.items()):
+        top_fids = [fid for fid, _v in sorted(fid_to_peak.items(), key=lambda item: item[1], reverse=True)[:5]]
+        rows = plot_groups.get(key, [])
+        step_ids = sorted({int(row["step_idx"]) for row in rows if int(row["feature_id"]) in set(top_fids)})
+        if not top_fids or not step_ids:
+            continue
+        curves: Dict[int, List[float]] = {fid: [0.0 for _ in step_ids] for fid in top_fids}
+        step_to_j = {step: j for j, step in enumerate(step_ids)}
+        for row in rows:
+            fid = int(row["feature_id"])
+            if fid not in curves:
+                continue
+            val = _float_or_none(row.get("final_coeff_mean_abs"))
+            if val is None:
+                continue
+            curves[fid][step_to_j[int(row["step_idx"])]] = float(val)
+        activation_panels.append((key, step_ids, curves))
+
+    if activation_panels:
+        n_panels = len(activation_panels)
+        fig_h = max(3.0, 2.8 * n_panels)
+        fig, axes = plt.subplots(n_panels, 1, figsize=(11, fig_h), squeeze=False)
+        for ax, ((concept, role, block), step_ids, curves) in zip(axes[:, 0], activation_panels):
+            for fid, vals in curves.items():
+                ax.plot(step_ids, vals, marker="o", linewidth=1.4, markersize=3, label=str(fid))
+            ax.set_title(f"Top processed activation: {concept} / {role} / {block}")
+            ax.set_xlabel("step_idx")
+            ax.set_ylabel("final_coeff_mean_abs")
+            ax.grid(alpha=0.25)
+            ax.legend(title="feature_id", fontsize=7, ncol=min(5, max(1, len(curves))))
+        fig.tight_layout()
+        path = out_root / "diag_top_feature_final_activation.png"
+        fig.savefig(path, dpi=160)
+        plt.close(fig)
+
 
 def main() -> None:
     """程序主入口。"""
