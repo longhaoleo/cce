@@ -19,21 +19,43 @@ ATOMIC_A=("dog" "red" "flower")
 ATOMIC_B=("glasses" "car" "van_gogh")
 LOCATE_CONCEPTS=("dog_glasses" "red_car" "flower_van_gogh" "dog" "red" "flower" "glasses" "car" "van_gogh")
 
+BLOCK_SHORTS=("down.2.1" "mid.0" "up.0.0" "up.0.1")
+NEED_LOCATE=()
+for concept in "${LOCATE_CONCEPTS[@]}"; do
+  missing=0
+  for block in "${BLOCK_SHORTS[@]}"; do
+    if [[ ! -s "${SAE_ROOT}/concept-dig/${block}/${concept}/top_positive_features.csv" ]]; then
+      missing=1
+      break
+    fi
+  done
+  if [[ "${missing}" -eq 1 ]]; then
+    NEED_LOCATE+=("${concept}")
+  else
+    echo "[compositional-v0] skip locator, found cached concept=${concept}"
+  fi
+done
+
 echo "[compositional-v0] ckpt=${CKPT_DIR}"
 echo "[compositional-v0] sae_root=${SAE_ROOT}"
 echo "[compositional-v0] out=${OUT_ROOT}"
 echo "[compositional-v0] max_prompts=${MAX_PROMPTS} top_k=${INT_TOP_K} timestep=${TIMESTEP_WINDOW_START}:${TIMESTEP_WINDOW_END}"
 
-python -m runtime.shared.locator \
-  --ckpt_dir "${CKPT_DIR}" \
-  --local_files_only \
-  --sae_root "${SAE_ROOT}" \
-  --only "${LOCATE_CONCEPTS[@]}" \
-  --taris_t_start 1000 \
-  --taris_t_end 0 \
-  --taris_num_steps 5 \
-  --taris_top_k 10 \
-  --taris_score_mode taris
+if [[ "${#NEED_LOCATE[@]}" -gt 0 ]]; then
+  echo "[compositional-v0] locate missing concepts: ${NEED_LOCATE[*]}"
+  python -m runtime.shared.locator \
+    --ckpt_dir "${CKPT_DIR}" \
+    --local_files_only \
+    --sae_root "${SAE_ROOT}" \
+    --only "${NEED_LOCATE[@]}" \
+    --taris_t_start 1000 \
+    --taris_t_end 0 \
+    --taris_num_steps 5 \
+    --taris_top_k 10 \
+    --taris_score_mode taris
+else
+  echo "[compositional-v0] all locator outputs already exist; skip locator"
+fi
 
 python scripts/analyze_composition_overlap.py \
   --sae_root "${SAE_ROOT}" \
