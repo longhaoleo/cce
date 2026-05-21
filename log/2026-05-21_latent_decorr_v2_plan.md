@@ -92,3 +92,44 @@
   - `bash -n scripts/run_latent_decorr_v2_train.sh`
 - 未完成验证：
   - 当前本机环境缺少 `torch`，尚未运行训练 smoke 和单元测试；需在训练环境中执行。
+
+## 9. 2026-05-21 观察：flower 擦除效果较差
+
+- 现象：
+  - 在当前批量擦除配置下，`flower` 的擦除效果不好。
+  - 当前配置大致为：`int_scale=5000`、`int_feature_top_k=2`、`stat_time`、`--int_timestep_window 1000 300`、`--int_max_delta_over_x 0.2`。
+- 初步记录：
+  - `flower` 可能不是由少数 top feature 覆盖的单一物体概念，top-2 特征预算可能不够。
+  - 也可能是当前时间窗只覆盖高/中噪声阶段，未覆盖足够的细节形成阶段。
+  - 后续应对比 `top_k=5/10`、不同 `int_timestep_window`，以及 `stat_x_learned_rel` 是否能改善。
+- 下一步建议：
+  - 先保留当前结果目录作为失败样本。
+  - 对 `flower` 单独跑一组小消融：
+    - `int_feature_top_k = 2 / 5 / 10`
+    - `int_timestep_window = 1000 300 / 800 100 / 1000 0`
+    - `stat_only` 对比 `stat_x_learned_rel`
+
+## 10. 2026-05-21 更新：组合概念实验 v0
+
+- 新增组合概念：
+  - `dog_glasses = dog with glasses`
+  - `red_car = red + car`
+  - `flower_van_gogh = flower + Van Gogh style`
+- 新增文件：
+  - `target_concept_dict/dog_glasses.json`
+  - `target_concept_dict/red_car.json`
+  - `target_concept_dict/flower_van_gogh.json`
+  - `batch_test_prompt/dog_glasses.csv`
+  - `batch_test_prompt/red_car.csv`
+  - `batch_test_prompt/flower_van_gogh.csv`
+  - `scripts/compositional_concept_erasure_v0.md`
+  - `scripts/run_compositional_v0.sh`
+  - `scripts/analyze_composition_overlap.py`
+- v0 实验设计：
+  - 先定位组合概念和对应原子概念。
+  - 用 `feature_overlap.csv` 计算 `union_coverage` 与 `new_feature_ratio`。
+  - 对每个组合跑五组：组合 target、A-only preservation、B-only preservation、atomic A on composite、atomic B on composite。
+- 当前目标：
+  - 判断组合概念更像原子 feature union，还是 emergent feature cluster。
+  - 判断当前 flat feature erase 是否会误伤单独 A/B。
+  - 特别观察 `flower_van_gogh` 是否比单独 `flower` 更容易或更难擦除。
